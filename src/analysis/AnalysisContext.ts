@@ -577,10 +577,6 @@ export class AnalysisContext {
         this.aliasMap = map
     }
 
-    setReadingModule(name?: string) {
-        this.currentModule = name ?? ''
-    }
-
     /**
      * Sets up basic info for a function.
      */

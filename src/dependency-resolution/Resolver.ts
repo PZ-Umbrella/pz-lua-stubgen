@@ -326,7 +326,6 @@ export class Resolver extends BaseReporter {
 
     /**
      * Collects global reads and writes, and requires for a given file.
-     * @param filePath
      */
     protected async readFile(filePath: string) {
         const identifier = getFileIdentifier(filePath, this.inDirectory)
