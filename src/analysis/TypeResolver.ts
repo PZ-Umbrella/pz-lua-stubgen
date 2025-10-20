@@ -583,13 +583,15 @@ export class TypeResolver {
 
             switch (item.type) {
                 case 'partial':
-                    if (item.classInfo) {
-                        const info = this.context.getTableInfo(
-                            item.classInfo.tableId,
-                        )
+                    const clsInfo = item.classInfo
+                    if (clsInfo) {
+                        const info = this.context.getTableInfo(clsInfo.tableId)
+                        const name = info.className
 
-                        if (!info.isEmptyClass) {
-                            classes.push(item.classInfo)
+                        // avoid empty classes & double output of local classes that were reassigned to a global
+                        // (i.e., handle ISInventoryPaneContextMenu ISRecipeTooltip edge case)
+                        if (!info.isEmptyClass && clsInfo.name === name) {
+                            classes.push(clsInfo)
                         }
                     }
 
@@ -714,7 +716,7 @@ export class TypeResolver {
 
         // check that metatable is a class
         const metaInfo = this.context.getTableInfo(resolvedMeta)
-        if (!metaInfo.className && !metaInfo.fromHiddenClass) {
+        if (!metaInfo.className) {
             return
         }
 

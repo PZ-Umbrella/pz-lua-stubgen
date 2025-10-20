@@ -146,6 +146,19 @@ export class AnalysisContext {
     }
 
     /**
+     * Returns the current module's name.
+     * This is the last part of the file identifier path.
+     */
+    getCurrentModuleName(): string {
+        const slash = this.currentModule.lastIndexOf('/')
+        if (slash === -1) {
+            return this.currentModule
+        }
+
+        return this.currentModule.slice(slash + 1)
+    }
+
+    /**
      * Gets the list of definitions for an item ID.
      */
     getDefinitions(id: string): LuaExpressionInfo[] {

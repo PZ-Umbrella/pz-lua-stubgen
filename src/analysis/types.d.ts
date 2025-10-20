@@ -331,7 +331,7 @@ export interface TableInfo {
     /**
      * Whether the table was created from a local `:derive` assignment.
      */
-    fromHiddenClass?: boolean
+    isLocalDeriveClass?: boolean
 
     /**
      * The name of the base class, for hidden classes that are ultimately assigned to a global.
