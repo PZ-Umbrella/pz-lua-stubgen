@@ -3,6 +3,7 @@ import { getLuaFieldKey, readLuaStringLiteral } from '../helpers'
 import { LuaScope } from '../scopes'
 import { AnalysisContext } from './AnalysisContext'
 import {
+    AnalysisItem,
     FunctionInfo,
     LuaExpression,
     LuaMember,
@@ -190,6 +191,48 @@ export class ClassResolver {
 
         if (!addedClosureClass) {
             this.tryAddImpliedFromMethod(scope, info, identExpr)
+        }
+    }
+
+    /**
+     * Attempts to add a class based on the presence of a function declaration on an unknown global.
+     * If the class exists in this module already, returns the existing class.
+     * @param scope The current scope.
+     * @param expr An expression representing the function identifier node.
+     * @param item An analysis item. If it's not a function definition, this fails.
+     * @returns The table ID to use for the unknown class.
+     */
+    tryAddUnknownClass(
+        scope: LuaScope,
+        expr: LuaMember,
+        item: AnalysisItem,
+    ): string | undefined {
+        // only add unknown classes from functions
+        if (item.type !== 'functionDefinition') {
+            return
+        }
+
+        // require unknown global reference for the class name
+        const lhsBase = expr.base
+        if (lhsBase.type !== 'reference' || lhsBase.id.startsWith('@')) {
+            return
+        }
+
+        // check for existing unknown class
+        const globalName = lhsBase.id
+        let id = this.context.unknownClasses.get(globalName)
+        if (id) {
+            return id
+        }
+
+        // create a new table and add as an implied class if not found
+        id = this.context.newTableId(lhsBase.id)
+        this.context.unknownClasses.set(globalName, id)
+        const info = this.context.getTableInfo(id)
+        const added = this.tryAddImpliedClass(scope, lhsBase, info)
+
+        if (added) {
+            return id
         }
     }
 

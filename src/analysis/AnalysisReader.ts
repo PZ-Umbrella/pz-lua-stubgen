@@ -45,12 +45,12 @@ export class AnalysisReader extends BaseReader {
             return
         }
 
-        this.context.currentModule = identifier
+        this.context.setCurrentReadingModule(identifier)
 
         const scope = this.createScope(tree) as LuaModuleScope
         this.context.setModule(identifier, scope, this.readScope(scope))
 
-        this.context.currentModule = ''
+        this.context.setCurrentReadingModule(undefined)
         this.expressionCache.clear()
     }
 

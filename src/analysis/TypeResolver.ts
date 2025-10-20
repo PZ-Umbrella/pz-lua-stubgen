@@ -346,6 +346,20 @@ export class TypeResolver {
                     return false
                 })
 
+                // method definition on unknown global → unknown class for base
+                if (memberBase.length === 0) {
+                    const id = this.classResolver.tryAddUnknownClass(
+                        scope,
+                        lhs,
+                        item,
+                    )
+
+                    if (id) {
+                        memberBase.push(id)
+                    }
+                }
+
+                // no types or ambiguous type
                 if (memberBase.length !== 1) {
                     break
                 }

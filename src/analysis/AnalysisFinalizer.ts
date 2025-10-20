@@ -38,7 +38,7 @@ export class AnalysisFinalizer {
 
         const clsMap = new Map<string, AnalyzedClass[]>()
         for (const [id, mod] of this.context.modules) {
-            this.context.currentModule = id
+            this.context.setCurrentReadingModule(id)
             const refSet = this.getReferences(mod)
             const refMap: Map<string, LuaExpression | null> = new Map()
 
@@ -143,7 +143,7 @@ export class AnalysisFinalizer {
             this.finalizeClassFields(clsDefs, clsMap)
         }
 
-        this.context.currentModule = ''
+        this.context.setCurrentReadingModule(undefined)
         return modules
     }
 
