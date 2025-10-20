@@ -1,7 +1,7 @@
 {
     "name": "pz-lua-stubgen",
     "main": "build/main.js",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "scripts": {
         "build": "tsc",
         "start": "node build/main.js",
