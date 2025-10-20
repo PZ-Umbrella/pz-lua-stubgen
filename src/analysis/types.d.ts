@@ -410,7 +410,6 @@ export interface AnalyzeArgs extends BaseReportArgs {
 }
 
 export interface AnalysisContextArgs {
-    analyzer: Analyzer
     heuristics?: boolean
     isRosettaInit?: boolean
 }

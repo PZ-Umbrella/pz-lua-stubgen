@@ -29,6 +29,13 @@ export class ClassResolver {
     }
 
     /**
+     * The type resolver on the context.
+     */
+    protected get typeResolver() {
+        return this.context.typeResolver
+    }
+
+    /**
      * Adds partial items for classes referenced in an expression.
      * @param scope The current scope.
      * @param expression The expression to check.
@@ -46,7 +53,7 @@ export class ClassResolver {
                 return
         }
 
-        const types = this.context.typeResolver.resolve({ expression })
+        const types = this.typeResolver.resolve({ expression })
         if (types.size !== 1) {
             return
         }
@@ -408,7 +415,7 @@ export class ClassResolver {
             }
         }
 
-        const typeSet = this.context.typeResolver.resolve({ expression: expr })
+        const typeSet = this.typeResolver.resolve({ expression: expr })
 
         // expect unambiguous type
         if (typeSet.size !== 1) {
@@ -470,7 +477,7 @@ export class ClassResolver {
 
         // resolve local variables for global classes
         if (id.startsWith('@')) {
-            const types = this.context.typeResolver.resolve({
+            const types = this.typeResolver.resolve({
                 expression: base,
             })
             const resolved = [...types][0]
@@ -657,7 +664,7 @@ export class ClassResolver {
             name = scope.localIdToName(base.id) ?? base.id
 
             // name collision → don't emit a class annotation for the container
-            const types = this.context.typeResolver.resolve({
+            const types = this.typeResolver.resolve({
                 expression: base,
             })
 
@@ -695,7 +702,7 @@ export class ClassResolver {
 
         // mark the instance in the base class
         const resolvedBaseTypes = [
-            ...this.context.typeResolver.resolve({
+            ...this.typeResolver.resolve({
                 expression: base,
             }),
         ]
@@ -713,7 +720,7 @@ export class ClassResolver {
 
         if (identExpr.indexer === ':') {
             info.parameterTypes.push(
-                this.context.typeResolver.resolve({ expression: base }),
+                this.typeResolver.resolve({ expression: base }),
             )
         }
 
@@ -740,7 +747,7 @@ export class ClassResolver {
 
         // find the base type & fetch its table info
         const base = identExpr.base
-        const types = this.context.typeResolver.resolve({ expression: base })
+        const types = this.typeResolver.resolve({ expression: base })
         if (types.size !== 1) {
             return
         }
@@ -863,7 +870,7 @@ export class ClassResolver {
 
         // TableRef({ ... })
         const callBase = rhs.arguments[0]
-        const types = this.context.typeResolver.resolve({
+        const types = this.typeResolver.resolve({
             expression: callBase,
         })
 

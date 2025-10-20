@@ -135,7 +135,7 @@ export class BaseLuaScope {
     }
 
     /**
-     * Gets the name of a local associated with the given ID, if it's a local.
+     * Gets the name of a local associated with the given ID, if it's a local to this scope.
      * Otherwise, returns the given ID.
      */
     getName(id: string): string {

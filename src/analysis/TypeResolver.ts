@@ -1,11 +1,26 @@
+import type ast from 'luaparse'
+import { getLiteralKey } from '../helpers'
+import { LuaScope } from '../scopes'
 import { AnalysisContext } from './AnalysisContext'
 import {
+    AssignmentItem,
+    FunctionDefinitionItem,
     FunctionInfo,
     LuaExpression,
     LuaExpressionInfo,
     LuaLiteral,
     LuaOperation,
+    LuaReference,
+    RequireAssignmentItem,
+    ResolvedClassInfo,
+    ResolvedFieldInfo,
+    ResolvedFunctionInfo,
+    ResolvedRequireInfo,
+    ResolvedReturnInfo,
+    ResolvedScopeItem,
+    ReturnsItem,
     TableInfo,
+    UsageItem,
 } from './types'
 
 const RGBA_NAMES = new Set(['r', 'g', 'b', 'a'])
@@ -21,6 +36,13 @@ export class TypeResolver {
 
     constructor(context: AnalysisContext) {
         this.context = context
+    }
+
+    /**
+     * The class resolver on the context.
+     */
+    protected get classResolver() {
+        return this.context.classResolver
     }
 
     /**
@@ -214,10 +236,7 @@ export class TypeResolver {
                     break
                 }
 
-                const key = this.context.getLiteralKey(
-                    index.literal,
-                    index.luaType,
-                )
+                const key = getLiteralKey(index.literal, index.luaType)
 
                 typesToAdd = this.resolveFieldTypes(
                     indexBaseTypes,
@@ -253,6 +272,230 @@ export class TypeResolver {
         }
 
         return types
+    }
+
+    /**
+     * Adds an assignment to the list of definitions or fields.
+     */
+    resolveAssignment(
+        scope: LuaScope,
+        item: AssignmentItem | FunctionDefinitionItem | RequireAssignmentItem,
+    ) {
+        const lhs =
+            item.type === 'functionDefinition' ? item.expression : item.lhs
+
+        // anonymous functions have no assignment
+        if (!lhs) {
+            return
+        }
+
+        let rhs: LuaExpression
+        switch (item.type) {
+            case 'assignment':
+            case 'requireAssignment':
+                rhs = item.rhs
+                break
+
+            case 'functionDefinition':
+                rhs = item.literal
+                break
+        }
+
+        const index = item.type === 'assignment' ? item.index : undefined
+        switch (lhs.type) {
+            case 'reference':
+                const tableId = this.tryAddPartialItem(scope, item, lhs, rhs)
+                if (tableId) {
+                    rhs = {
+                        type: 'literal',
+                        luaType: 'table',
+                        tableId,
+                    }
+                }
+
+                this.addDefinition(scope, lhs.id, rhs, index)
+                break
+
+            case 'index':
+                const indexBase = [...this.resolve({ expression: lhs.base })]
+
+                if (indexBase.length !== 1) {
+                    break
+                }
+
+                const resolved = this.resolveToLiteral(lhs.index)
+                if (!resolved || !resolved.literal) {
+                    break
+                }
+
+                const key = getLiteralKey(resolved.literal, resolved.luaType)
+
+                this.addField(scope, indexBase[0], key, rhs, lhs, index)
+                break
+
+            case 'member':
+                let isInstance = false
+                const memberBase = [
+                    ...this.resolve({ expression: lhs.base }),
+                ].filter((x) => {
+                    if (!x.startsWith('@self') && !x.startsWith('@instance')) {
+                        return true
+                    }
+
+                    isInstance = true
+                    return false
+                })
+
+                if (memberBase.length !== 1) {
+                    break
+                }
+
+                // ignore __index in instances
+                if (isInstance && lhs.member === '__index') {
+                    break
+                }
+
+                // add original assignment name to tables
+                if (rhs.type === 'literal' && rhs.tableId) {
+                    const info = this.context.getTableInfo(rhs.tableId)
+                    info.originalName ??= this.classResolver.getFieldClassName(
+                        scope,
+                        lhs,
+                    )
+                }
+
+                const memberKey = getLiteralKey(lhs.member)
+                this.addField(
+                    scope,
+                    memberBase[0],
+                    memberKey,
+                    rhs,
+                    lhs,
+                    index,
+                    isInstance,
+                )
+
+                break
+
+            // operation or literal should not occur directly in lhs
+        }
+    }
+
+    resolveFunctionParams(
+        scope: LuaScope,
+        node: ast.FunctionDeclaration,
+        info: FunctionInfo,
+    ) {
+        const identExpr = info.identifierExpression
+        if (identExpr?.type === 'member') {
+            // add implicit self parameter
+            if (identExpr.indexer === ':') {
+                info.parameters.push(scope.getOrAddSelf())
+            }
+
+            this.classResolver.tryAddFromFunctionDefinition(
+                scope,
+                node,
+                info,
+                identExpr,
+            )
+        }
+
+        for (const param of node.parameters) {
+            const paramId = scope.getLocalId(
+                param.type === 'Identifier' ? param.name : '...',
+            )
+
+            if (paramId) {
+                info.parameters.push(paramId)
+            }
+        }
+
+        info.parameterNames = info.parameters.map((x) => scope.getName(x))
+
+        if (this.context.applyHeuristics) {
+            this.applyParamNameHeuristics(info)
+        }
+    }
+
+    resolveReturns(item: ReturnsItem | ResolvedScopeItem) {
+        if (item.returns === undefined) {
+            return
+        }
+
+        const funcInfo = this.context.getFunctionInfo(item.id)
+
+        // don't add returns to a class constructor
+        if (funcInfo.isConstructor) {
+            funcInfo.minReturns = Math.min(
+                funcInfo.minReturns ?? Number.MAX_VALUE,
+                item.returns.length,
+            )
+
+            return
+        }
+
+        let fullReturnCount = item.returns.length
+        for (let i = 0; i < item.returns.length; i++) {
+            funcInfo.returnTypes[i] ??= new Set()
+            funcInfo.returnExpressions[i] ??= new Set()
+
+            if (item.type === 'resolved') {
+                item.returns[i].types.forEach((x) =>
+                    funcInfo.returnTypes[i].add(x),
+                )
+
+                continue
+            }
+
+            const ret = item.returns[i]
+            const isTailCall =
+                i === item.returns.length - 1 &&
+                ret.type === 'operation' &&
+                ret.operator === 'call'
+
+            if (isTailCall) {
+                const funcReturns = this.resolveReturnTypes(ret)
+                if (funcReturns) {
+                    fullReturnCount += funcReturns.length - 1
+                    funcInfo.returnExpressions[i].add(ret)
+
+                    for (let j = 0; j < funcReturns.length; j++) {
+                        funcInfo.returnTypes[i + j] ??= new Set()
+
+                        this.remapBooleans(funcReturns[j]).forEach((x) =>
+                            funcInfo.returnTypes[i + j].add(x),
+                        )
+                    }
+
+                    continue
+                }
+            }
+
+            funcInfo.returnExpressions[i].add(ret)
+            this.remapBooleans(this.resolve({ expression: ret })).forEach((x) =>
+                funcInfo.returnTypes[i].add(x),
+            )
+        }
+
+        funcInfo.minReturns = Math.min(
+            funcInfo.minReturns ?? Number.MAX_VALUE,
+            fullReturnCount,
+        )
+
+        const min = funcInfo.minReturns
+        if (min === undefined) {
+            return
+        }
+
+        if (funcInfo.returnTypes.length <= min) {
+            return
+        }
+
+        // mark returns exceeding the minimum as nullable
+        for (let i = min; i < funcInfo.returnTypes.length; i++) {
+            funcInfo.returnTypes[i].add('nil')
+        }
     }
 
     /**
@@ -298,6 +541,259 @@ export class TypeResolver {
         }
 
         return types
+    }
+
+    /**
+     * Resolves the types of the analysis items for a module.
+     */
+    resolveScope(scope: LuaScope): ResolvedScopeItem {
+        // collect usage information
+        for (const item of scope.items) {
+            if (item.type !== 'usage') {
+                continue
+            }
+
+            this.addUsage(item)
+        }
+
+        // resolve classes, functions, and returns
+        const classes: ResolvedClassInfo[] = []
+        const functions: ResolvedFunctionInfo[] = []
+        const requires: ResolvedRequireInfo[] = []
+        const fields: ResolvedFieldInfo[] = []
+        const seenClasses = new Set<string>()
+
+        let hasReturn = false
+        for (const item of scope.items) {
+            hasReturn ||= item.type === 'returns'
+
+            switch (item.type) {
+                case 'partial':
+                    if (item.classInfo) {
+                        const info = this.context.getTableInfo(
+                            item.classInfo.tableId,
+                        )
+
+                        if (!info.isEmptyClass) {
+                            classes.push(item.classInfo)
+                        }
+                    }
+
+                    if (item.functionInfo) {
+                        functions.push(item.functionInfo)
+                    }
+
+                    if (item.requireInfo) {
+                        requires.push(item.requireInfo)
+                    }
+
+                    if (item.fieldInfo) {
+                        fields.push(item.fieldInfo)
+                    }
+
+                    if (item.seenClassId) {
+                        seenClasses.add(item.seenClassId)
+                    }
+
+                    break
+
+                case 'resolved':
+                    item.functions.forEach((x) => functions.push(x))
+                    item.classes.forEach((x) => classes.push(x))
+                    item.requires.forEach((x) => requires.push(x))
+                    item.fields.forEach((x) => fields.push(x))
+                case 'returns':
+                    this.resolveReturns(item)
+                    break
+            }
+        }
+
+        let returns: ResolvedReturnInfo[] | undefined
+        if (hasReturn || scope.type !== 'block') {
+            const funcInfo = this.context.getFunctionInfo(scope.id)
+            returns = funcInfo.returnTypes.map(
+                (returnTypes, i): ResolvedReturnInfo => {
+                    return {
+                        types: new Set(returnTypes),
+                        expressions: funcInfo.returnExpressions[i] ?? new Set(),
+                    }
+                },
+            )
+        }
+
+        if (scope.type === 'module') {
+            const declaredClasses = new Set<string>()
+            classes.forEach((x) => declaredClasses.add(x.tableId))
+
+            for (const id of seenClasses) {
+                if (declaredClasses.has(id)) {
+                    continue
+                }
+
+                const info = this.context.getTableInfo(id)
+                if (!info.className || info.isEmptyClass) {
+                    continue
+                }
+
+                classes.push({
+                    name: info.className,
+                    tableId: info.id,
+                })
+            }
+        }
+
+        return {
+            type: 'resolved',
+            id: scope.id,
+            classes,
+            functions,
+            returns,
+            requires,
+            fields,
+            seenClasses,
+        }
+    }
+
+    /**
+     * Modifies types based on a setmetatable call.
+     */
+    resolveSetMetatable(
+        scope: LuaScope,
+        lhs: LuaExpression,
+        meta: LuaExpression,
+    ) {
+        if (lhs.type !== 'reference') {
+            return
+        }
+
+        const name = scope.localIdToName(lhs.id)
+        if (!name) {
+            return
+        }
+
+        if (meta.type === 'literal') {
+            const fields = meta.fields
+
+            // { X = Y }
+            if (fields?.length !== 1) {
+                return
+            }
+
+            // { __index = X }
+            const field = fields[0]
+            if (field.key.type !== 'string' || field.key.name !== '__index') {
+                return
+            }
+
+            meta = field.value
+        }
+
+        // get metatable type
+        const metaTypes = [...this.resolve({ expression: meta })].filter(
+            (x) => !x.startsWith('@self'),
+        )
+
+        const resolvedMeta = metaTypes[0]
+        if (metaTypes.length !== 1 || !resolvedMeta.startsWith('@table')) {
+            return
+        }
+
+        // check that metatable is a class
+        const metaInfo = this.context.getTableInfo(resolvedMeta)
+        if (!metaInfo.className && !metaInfo.fromHiddenClass) {
+            return
+        }
+
+        // get lhs types
+        const lhsTypes = [...this.resolve({ expression: lhs })].filter(
+            (x) => x !== '@instance',
+        )
+
+        if (lhsTypes.find((x) => !x.startsWith('@table'))) {
+            // non-table lhs → don't treat as instance
+            return
+        }
+
+        for (const resolvedLhs of lhsTypes) {
+            const lhsInfo = this.context.getTableInfo(resolvedLhs)
+            // don't copy class fields
+            if (lhsInfo.className) {
+                continue
+            }
+
+            // copy table fields to class instance fields
+            lhsInfo.definitions.forEach((list, key) => {
+                let fieldDefs = metaInfo.definitions.get(key)
+                if (!fieldDefs) {
+                    fieldDefs = []
+                    metaInfo.definitions.set(key, fieldDefs)
+                }
+
+                for (const info of list) {
+                    fieldDefs.push({
+                        expression: info.expression,
+                        index: info.index,
+                        instance: true,
+                        definingModule: this.context.currentModule,
+                        functionLevel: !scope.id.startsWith('@module'),
+                    })
+                }
+            })
+        }
+
+        // mark lhs as class instance
+        const newId = scope.addInstance(name)
+        this.context.definitions.set(newId, [
+            {
+                expression: {
+                    type: 'literal',
+                    luaType: 'table',
+                    tableId: resolvedMeta,
+                },
+            },
+        ])
+    }
+
+    resolveTableLiteralFields(scope: LuaScope, tableInfo: TableInfo) {
+        const tableId = tableInfo.id
+        const fields = tableInfo.literalFields
+
+        for (const field of fields) {
+            const key = field.key
+
+            let literalKey: string | undefined
+            switch (key.type) {
+                case 'string':
+                    literalKey = getLiteralKey(key.name)
+                    break
+
+                case 'literal':
+                    literalKey = getLiteralKey(key.literal, key.luaType)
+
+                    break
+
+                case 'auto':
+                    literalKey = key.index.toString()
+                    break
+
+                // can't resolve expressions
+            }
+
+            if (!literalKey) {
+                continue
+            }
+
+            this.addField(
+                scope,
+                tableId,
+                literalKey,
+                field.value,
+                undefined,
+                1,
+                false,
+                true,
+            )
+        }
     }
 
     /**
@@ -348,7 +844,7 @@ export class TypeResolver {
                     }
 
                     tableInfo = this.context.getTableInfo(memberBase[0])
-                    key = this.context.getLiteralKey(expr.member)
+                    key = getLiteralKey(expr.member)
                     fieldDefs = tableInfo.definitions.get(key) ?? []
 
                     if (fieldDefs.length === 1) {
@@ -373,10 +869,7 @@ export class TypeResolver {
                     }
 
                     tableInfo = this.context.getTableInfo(indexBase[0])
-                    key = this.context.getLiteralKey(
-                        index.literal,
-                        index.luaType,
-                    )
+                    key = getLiteralKey(index.literal, index.luaType)
 
                     fieldDefs = tableInfo.definitions.get(key) ?? []
 
@@ -404,6 +897,237 @@ export class TypeResolver {
 
                     break
             }
+        }
+    }
+
+    protected addDefinition(
+        scope: LuaScope,
+        id: string,
+        expression: LuaExpression,
+        index?: number,
+    ) {
+        let defs = this.context.definitions.get(id)
+        if (!defs) {
+            defs = []
+            this.context.definitions.set(id, defs)
+        }
+
+        defs.push({
+            expression,
+            index,
+            definingModule: this.context.currentModule,
+            functionLevel: !scope.id.startsWith('@module'),
+        })
+    }
+
+    protected addField(
+        scope: LuaScope,
+        id: string,
+        field: string,
+        rhs: LuaExpression,
+        lhs?: LuaExpression,
+        index?: number,
+        instance?: boolean,
+        fromLiteral?: boolean,
+    ) {
+        if (!id.startsWith('@table')) {
+            return
+        }
+
+        const parentInfo = this.context.getTableInfo(id)
+
+        // treat closure-based classes' non-function fields as instance fields
+        if (parentInfo.isClosureClass) {
+            instance = rhs.type !== 'literal' || rhs.luaType !== 'function'
+        }
+
+        // check for `:derive` calls in field setters
+        if (lhs && rhs.type === 'operation') {
+            rhs = this.classResolver.tryAddFromFieldCallAssignment(
+                scope,
+                lhs,
+                rhs,
+            )
+        }
+
+        const types = this.resolve({ expression: rhs })
+        const tableId = types.size === 1 ? [...types][0] : undefined
+        const fieldInfo = tableId?.startsWith('@table')
+            ? this.context.getTableInfo(tableId)
+            : undefined
+
+        if (parentInfo.className) {
+            // include partial reference for class with fields set
+            scope.items.push({
+                type: 'partial',
+                seenClassId: id,
+            })
+
+            // mark the table as contained by the class
+            if (fieldInfo) {
+                fieldInfo.containerId ??= id
+            }
+        } else if (fieldInfo?.containerId) {
+            scope.items.push({
+                type: 'partial',
+                seenClassId: fieldInfo.containerId,
+            })
+        } else if (parentInfo.containerId) {
+            if (fieldInfo) {
+                // bubble up container IDs
+                fieldInfo.containerId = parentInfo.containerId
+            }
+
+            scope.items.push({
+                type: 'partial',
+                seenClassId: parentInfo.containerId,
+            })
+        }
+
+        if (lhs?.type === 'member' || lhs?.type === 'index') {
+            this.classResolver.addSeenClasses(scope, lhs.base)
+        }
+
+        let fieldDefs = parentInfo.definitions.get(field)
+        if (!fieldDefs) {
+            fieldDefs = []
+            parentInfo.definitions.set(field, fieldDefs)
+        }
+
+        fieldDefs.push({
+            expression: rhs,
+            index,
+            instance,
+            fromLiteral,
+            definingModule: this.context.currentModule,
+            functionLevel: !scope.id.startsWith('@module'),
+        })
+
+        // created a class → done
+        if (parentInfo.className || !parentInfo.containerId) {
+            return
+        }
+
+        // function assignment to a non-class table within a class → create nested class
+        const isFunctionAssignment =
+            lhs &&
+            (lhs.type === 'member' || lhs.type === 'index') &&
+            rhs.type === 'literal' &&
+            rhs.functionId
+
+        if (!isFunctionAssignment) {
+            return
+        }
+
+        const addedClass = this.classResolver.tryAddImpliedClass(
+            scope,
+            lhs.base,
+            parentInfo,
+        )
+
+        if (!addedClass) {
+            return
+        }
+
+        // extract the field name
+        const endIdx = parentInfo.className.lastIndexOf('.')
+        const targetName = getLiteralKey(
+            parentInfo.className.slice(endIdx ? endIdx + 1 : 0),
+        )
+
+        // overwrite defs with reference to class
+        const containerInfo = this.context.getTableInfo(parentInfo.containerId)
+        if (!containerInfo.definitions.has(targetName)) {
+            return
+        }
+
+        fieldDefs = []
+        fieldDefs.push({
+            expression: {
+                type: 'literal',
+                luaType: 'table',
+                tableId: id,
+            },
+            definingModule: this.context.currentModule,
+        })
+
+        containerInfo.definitions.set(targetName, fieldDefs)
+    }
+
+    protected tryAddPartialItem(
+        scope: LuaScope,
+        item: AssignmentItem | RequireAssignmentItem | FunctionDefinitionItem,
+        lhs: LuaReference,
+        rhs: LuaExpression,
+    ): string | undefined {
+        // edge case: closure-based classes
+        if (scope.type === 'function') {
+            if (scope.localIdToName(lhs.id) !== scope.classSelfName) {
+                return
+            }
+
+            // self = {} | Base.new() → use the generated table
+            return scope.classTableId
+        }
+
+        // check module and module-level blocks, excluding functions
+        if (!scope.id.startsWith('@module')) {
+            return
+        }
+
+        // include requires as module fields
+        if (item.type === 'requireAssignment') {
+            scope.items.push({
+                type: 'partial',
+                requireInfo: {
+                    name: lhs.id,
+                    module: item.rhs.module,
+                },
+            })
+
+            return
+        }
+
+        // global function definition
+        if (item.type === 'functionDefinition') {
+            // ignore local functions
+            if (item.isLocal) {
+                return
+            }
+
+            scope.items.push({
+                type: 'partial',
+                functionInfo: {
+                    name: lhs.id,
+                    functionId: item.id,
+                },
+            })
+
+            return
+        }
+
+        // class definition
+        const id = this.classResolver.tryAddPartial(scope, lhs, rhs)
+        if (id) {
+            return typeof id === 'string' ? id : undefined
+        }
+
+        // global function assignment
+        const rhsTypes = [...this.resolve({ expression: item.rhs })]
+
+        if (rhsTypes.length !== 1) {
+            return
+        }
+
+        const rhsType = rhsTypes[0]
+        if (rhsType.startsWith('@function')) {
+            scope.items.push({
+                type: 'partial',
+                functionInfo: {
+                    name: lhs.id,
+                    functionId: rhsType,
+                },
+            })
         }
     }
 
@@ -437,6 +1161,89 @@ export class TypeResolver {
         }
 
         return false
+    }
+
+    /**
+     * Adds information about the usage of an expression.
+     */
+    protected addUsage(item: UsageItem) {
+        let usageTypes = this.context.usageTypes.get(item.expression)
+        if (!usageTypes) {
+            usageTypes = new Set([
+                'boolean',
+                'function',
+                'number',
+                'string',
+                'table',
+            ])
+
+            this.context.usageTypes.set(item.expression, usageTypes)
+        }
+
+        if (item.supportsConcatenation) {
+            // string | number
+            usageTypes.delete('boolean')
+            usageTypes.delete('function')
+            usageTypes.delete('table')
+        }
+
+        if (item.supportsIndexing || item.supportsLength) {
+            // table | string
+            usageTypes.delete('boolean')
+            usageTypes.delete('function')
+            usageTypes.delete('number')
+        }
+
+        if (item.supportsIndexAssignment) {
+            // table
+            usageTypes.delete('boolean')
+            usageTypes.delete('function')
+            usageTypes.delete('number')
+            usageTypes.delete('string')
+        }
+
+        if (item.supportsMath || item.inNumericFor) {
+            // number
+            usageTypes.delete('boolean')
+            usageTypes.delete('function')
+            usageTypes.delete('string')
+            usageTypes.delete('table')
+        }
+
+        // handle function argument analysis
+        if (item.arguments === undefined) {
+            return
+        }
+
+        // function
+        usageTypes.delete('boolean')
+        usageTypes.delete('number')
+        usageTypes.delete('string')
+        usageTypes.delete('table')
+
+        const types = [...this.resolve({ expression: item.expression })]
+
+        const id = types[0]
+        if (types.length !== 1 || !id.startsWith('@function')) {
+            return
+        }
+
+        const funcInfo = this.context.getFunctionInfo(id)
+        const parameterTypes = funcInfo.parameterTypes
+
+        // add passed arguments to inferred parameter types
+        for (let i = 0; i < item.arguments.length; i++) {
+            parameterTypes[i] ??= new Set()
+            this.resolve({ expression: item.arguments[i] }).forEach((x) =>
+                parameterTypes[i].add(x),
+            )
+        }
+
+        // if arguments aren't passed for a parameter, add nil
+        for (let i = item.arguments.length; i < parameterTypes.length; i++) {
+            parameterTypes[i] ??= new Set()
+            parameterTypes[i].add('nil')
+        }
     }
 
     /**
@@ -488,6 +1295,19 @@ export class TypeResolver {
     }
 
     /**
+     * Gets the types determined based on usage for an expression.
+     * Returns undefined if types couldn't be determined.
+     */
+    protected getUsageTypes(expr: LuaExpression): Set<string> | undefined {
+        const types = this.context.usageTypes.get(expr)
+        if (!types || types.size === 0 || types.size === 5) {
+            return
+        }
+
+        return types
+    }
+
+    /**
      * Checks whether an expression is a literal or an
      * operation containing only literals.
      */
@@ -523,7 +1343,7 @@ export class TypeResolver {
             return
         }
 
-        const usage = this.context.getUsageTypes(expr)
+        const usage = this.getUsageTypes(expr)
         if (!usage) {
             // no narrowing is possible
             return
@@ -547,6 +1367,17 @@ export class TypeResolver {
 
         types.clear()
         narrowed.forEach((x) => types.add(x))
+    }
+
+    protected remapBooleans(types: Set<string>) {
+        const remapped = [...types].map((x) =>
+            x === 'true' || x === 'false' ? 'boolean' : x,
+        )
+
+        types.clear()
+        remapped.forEach((x) => types.add(x))
+
+        return types
     }
 
     /**
@@ -573,9 +1404,7 @@ export class TypeResolver {
             }
 
             const info = this.context.getTableInfo(type)
-            const literalKey = isIndex
-                ? field
-                : this.context.getLiteralKey(field)
+            const literalKey = isIndex ? field : getLiteralKey(field)
 
             const fieldDefs = info.definitions.get(literalKey) ?? []
 

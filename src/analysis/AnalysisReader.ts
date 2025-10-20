@@ -160,7 +160,7 @@ export class AnalysisReader extends BaseReader {
         const lhs = this.getLuaExpression(args[0], scope)
         const meta = this.getLuaExpression(args[1], scope)
 
-        this.context.setMetatable(scope, lhs, meta)
+        this.context.typeResolver.resolveSetMetatable(scope, lhs, meta)
     }
 
     /**
@@ -686,7 +686,7 @@ export class AnalysisReader extends BaseReader {
 
         // treat A = X.new(B) as setmetatable(A, B)
         // local o = ISPanel.new(self) → setmetatable(o, self)
-        this.context.setMetatable(scope, lhs, firstArg)
+        this.context.typeResolver.resolveSetMetatable(scope, lhs, firstArg)
     }
 
     /**
@@ -825,7 +825,7 @@ export class AnalysisReader extends BaseReader {
             }
         }
 
-        const resolved = this.context.resolveItems(scope)
+        const resolved = this.context.typeResolver.resolveScope(scope)
         if (scope.parent) {
             scope.parent.items.push(resolved)
         }

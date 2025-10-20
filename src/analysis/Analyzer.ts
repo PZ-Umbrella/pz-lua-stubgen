@@ -18,7 +18,6 @@ export class Analyzer extends BaseReporter {
         super(args)
 
         this.context = new AnalysisContext({
-            analyzer: this,
             isRosettaInit: args.isRosettaInit,
             heuristics: args.heuristics,
         })
@@ -50,6 +49,13 @@ export class Analyzer extends BaseReporter {
     }
 
     /**
+     * Finalizes analyzed modules.
+     */
+    protected finalizeModules() {
+        return this.context.finalizer.finalize()
+    }
+
+    /**
      * Determines the files to analyze based on dependency resolution.
      * This returns a list of file identifiers, rather than filenames.
      */
@@ -66,7 +72,7 @@ export class Analyzer extends BaseReporter {
      * Reads the files in the provided array in order.
      */
     protected async read(identifiers: string[]): Promise<AnalyzedModule[]> {
-        this.context.setAliasMap(getAliasMap(identifiers))
+        this.context.aliasMap = getAliasMap(identifiers)
 
         // analyze types
         for (const identifier of identifiers) {
@@ -88,7 +94,7 @@ export class Analyzer extends BaseReporter {
         }
 
         // resolve final types
-        const moduleMap = this.context.finalizeModules()
+        const moduleMap = this.finalizeModules()
 
         // build result
         const modules: AnalyzedModule[] = []

@@ -1,4 +1,4 @@
-import { getLuaFieldKey, isEmptyClass } from '../helpers'
+import { getLiteralKey, getLuaFieldKey, isEmptyClass } from '../helpers'
 import { AnalysisContext } from './AnalysisContext'
 import {
     AnalyzedClass,
@@ -242,7 +242,7 @@ export class AnalysisFinalizer {
             if (keyName) {
                 literalKeys.add(keyName)
 
-                const literalKeyName = this.context.getLiteralKey(keyName)
+                const literalKeyName = getLiteralKey(keyName)
                 const defs = info.definitions.get(literalKeyName) ?? []
                 if (defs.length > 1) {
                     ;[, types] = this.finalizeDefinitions(defs, refs)
