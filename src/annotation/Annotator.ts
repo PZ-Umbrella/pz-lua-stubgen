@@ -483,7 +483,7 @@ export class Annotator extends BaseAnnotator {
             }
 
             let scope = ''
-            if (SCOPES.has(field.name) && !/^[a-zA-Z_]/.test(typeString)) {
+            if (SCOPES.has(field.name)) {
                 scope = ' public'
             }
 

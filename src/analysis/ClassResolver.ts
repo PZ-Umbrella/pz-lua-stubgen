@@ -3,6 +3,7 @@ import { getLuaFieldKey, readLuaStringLiteral } from '../helpers'
 import { LuaScope } from '../scopes'
 import { AnalysisContext } from './AnalysisContext'
 import {
+    AnalysisItem,
     FunctionInfo,
     LuaExpression,
     LuaMember,
@@ -194,6 +195,48 @@ export class ClassResolver {
     }
 
     /**
+     * Attempts to add a class based on the presence of a function declaration on an unknown global.
+     * If the class exists in this module already, returns the existing class.
+     * @param scope The current scope.
+     * @param expr An expression representing the function identifier node.
+     * @param item An analysis item. If it's not a function definition, this fails.
+     * @returns The table ID to use for the unknown class.
+     */
+    tryAddUnknownClass(
+        scope: LuaScope,
+        expr: LuaMember,
+        item: AnalysisItem,
+    ): string | undefined {
+        // only add unknown classes from functions
+        if (item.type !== 'functionDefinition') {
+            return
+        }
+
+        // require unknown global reference for the class name
+        const lhsBase = expr.base
+        if (lhsBase.type !== 'reference' || lhsBase.id.startsWith('@')) {
+            return
+        }
+
+        // check for existing unknown class
+        const globalName = lhsBase.id
+        let id = this.context.unknownClasses.get(globalName)
+        if (id) {
+            return id
+        }
+
+        // create a new table and add as an implied class if not found
+        id = this.context.newTableId(lhsBase.id)
+        this.context.unknownClasses.set(globalName, id)
+        const info = this.context.getTableInfo(id)
+        const added = this.tryAddImpliedClass(scope, lhsBase, info)
+
+        if (added) {
+            return id
+        }
+    }
+
+    /**
      * Attempts to add a class definition that should exist based on the context.
      * @param scope The current scope.
      * @param base The expression to use to determine the class name.
@@ -255,30 +298,30 @@ export class ClassResolver {
      * @param lhs The left side of the assignment.
      * @param rhs The right side of the assignment.
      * @returns Returns a string class ID if a class was added.
-     * Otherwise, returns a boolean representing whether a partial of a different type was added.
+     * Otherwise, returns a boolean representing whether searching for a partial should be terminated.
      */
     tryAddPartial(
         scope: LuaScope,
         lhs: LuaReference,
         rhs: LuaExpression,
     ): string | boolean {
+        let isLocal = false
+        let localName: string | undefined
         const [base, deriveName] = this.findDerive(rhs) ?? []
 
         // check for local class
         if (lhs.id.startsWith('@')) {
-            // if there's a derive call, return a table so fields aren't misattributed
-            if (base) {
-                const newId = this.context.newTableId()
-                const info = this.context.getTableInfo(newId)
-                info.fromHiddenClass = true
-                info.originalBase = base
-                info.originalDeriveName = deriveName
-
-                return newId
+            if (!base) {
+                // ignore locals without derive call
+                return true
             }
 
-            // ignore local classes otherwise
-            return true
+            isLocal = true
+            localName = scope.localIdToName(lhs.id)
+
+            if (!localName) {
+                return true
+            }
         }
 
         const tableId = !base
@@ -289,11 +332,19 @@ export class ClassResolver {
             return false
         }
 
-        // global table or derive call → class
+        // derive call or global table → class
         const tableInfo = this.context.getTableInfo(tableId)
+
+        // handle reassignment of local :derive class
+        if (!isLocal && tableInfo.className && tableInfo.isLocalDeriveClass) {
+            tableInfo.className = undefined
+            tableInfo.isLocalDeriveClass = false
+            tableInfo.isLocalClass = false
+        }
 
         // assignment to existing class table → add a field instead
         if (
+            !isLocal &&
             tableInfo.className &&
             !tableInfo.isEmptyClass &&
             rhs.type !== 'literal' &&
@@ -313,12 +364,23 @@ export class ClassResolver {
         tableInfo.className ??= lhs.id
         tableInfo.definingModule ??= this.context.currentModule
 
+        if (isLocal) {
+            tableInfo.isLocalClass = true
+            tableInfo.isLocalDeriveClass = true
+            tableInfo.originalBase = base
+            tableInfo.originalDeriveName = deriveName
+
+            // prefix with the module name to avoid collisions
+            const moduleName = this.context.getCurrentModuleName()
+            tableInfo.className = moduleName + '.' + localName
+        }
+
         this.removeEmptyDefinition(lhs.id)
 
         scope.items.push({
             type: 'partial',
             classInfo: {
-                name: lhs.id,
+                name: tableInfo.className,
                 tableId,
                 definingModule: tableInfo.definingModule,
                 base: base ?? tableInfo.originalBase,
@@ -396,7 +458,7 @@ export class ClassResolver {
      * @returns A table ID to use for a class.
      */
     protected findClassTable(expr: LuaExpression): string | undefined {
-        // don't declare classes from calls (`:derive` is handled in `tryAddFromFieldCallAssignment`)
+        // don't declare classes from calls (`:derive` is handled separately)
         if (expr.type === 'operation' && expr.operator === 'call') {
             return
         }
@@ -770,7 +832,11 @@ export class ClassResolver {
         info.returnTypes.push(new Set(types)) // assume Class:new(...) returns Class
         info.isConstructor = true
 
-        if (tableInfo && !tableInfo.className && !tableInfo.fromHiddenClass) {
+        if (
+            tableInfo &&
+            !tableInfo.className &&
+            !tableInfo.isLocalDeriveClass
+        ) {
             this.tryAddImpliedClass(scope, base, tableInfo)
         }
     }

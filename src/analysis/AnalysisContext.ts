@@ -73,6 +73,12 @@ export class AnalysisContext {
     usageTypes: Map<LuaExpression, Set<string>>
 
     /**
+     * Associates unrecognized global names to temporary table IDs used to represent them.
+     * This is reset for each module.
+     */
+    unknownClasses: Map<string, string>
+
+    /**
      * Maps function declarations to function IDs.
      */
     protected functionToId: Map<ast.FunctionDeclaration, string>
@@ -117,6 +123,7 @@ export class AnalysisContext {
         this.parameterToFunctionId = new Map()
         this.definitions = new Map()
         this.usageTypes = new Map()
+        this.unknownClasses = new Map()
         this.modules = new Map()
 
         this.classResolver = new ClassResolver(this)
@@ -136,6 +143,19 @@ export class AnalysisContext {
     ) {
         scope.addItem(item)
         this.typeResolver.resolveAssignment(scope, item)
+    }
+
+    /**
+     * Returns the current module's name.
+     * This is the last part of the file identifier path.
+     */
+    getCurrentModuleName(): string {
+        const slash = this.currentModule.lastIndexOf('/')
+        if (slash === -1) {
+            return this.currentModule
+        }
+
+        return this.currentModule.slice(slash + 1)
     }
 
     /**
@@ -243,6 +263,15 @@ export class AnalysisContext {
     newTableId(name?: string): string {
         const count = this.nextTableIndex++
         return `@table(${count})` + (name ? `[${name}]` : '')
+    }
+
+    /**
+     * Sets the current module being processed.
+     * @param id The file identifier for the current module.
+     */
+    setCurrentReadingModule(id?: string) {
+        this.currentModule = id ?? ''
+        this.unknownClasses.clear()
     }
 
     /**
