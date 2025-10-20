@@ -2,7 +2,6 @@ import { AnalyzedClass } from '../../analysis'
 
 /**
  * Checks whether an analyzed class has no associated information.
- * @param cls
  */
 export const isEmptyClass = (cls: AnalyzedClass): boolean => {
     return (

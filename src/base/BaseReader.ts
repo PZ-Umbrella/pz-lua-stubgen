@@ -17,22 +17,6 @@ import { log } from '../logger'
  */
 export abstract class BaseReader {
     /**
-     * Gets potential aliases for a file identifier for requiring.
-     */
-    getFileAliases(identifier: string): string[] {
-        const aliases: string[] = []
-
-        let slash = identifier.indexOf('/')
-        while (slash !== -1) {
-            identifier = identifier.slice(slash + 1)
-            slash = identifier.indexOf('/')
-            aliases.push(identifier)
-        }
-
-        return aliases
-    }
-
-    /**
      * Creates a new Lua scope object.
      */
     protected createScope(node: NodeWithBody, parent?: LuaScope): LuaScope {
@@ -352,7 +336,6 @@ export abstract class BaseReader {
 
     /**
      * Sanitizes a Lua source string for AST parsing.
-     * @param source
      */
     protected sanitizeLua(source: string): string {
         // handles Kahlua-specific number quirks

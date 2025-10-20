@@ -1,7 +1,7 @@
 import { BaseReportArgs } from '../base/types'
 import { LuaExpression, LuaRequire, TableField } from './types.helpers'
-import { AnalysisContext } from './AnalysisContext'
 import { LuaScope } from '../scopes'
+import { Analyzer } from './Analyzer'
 
 interface BaseAnalysisItem {
     /**
@@ -257,7 +257,7 @@ export interface FunctionInfo {
     parameterNames: string[]
 
     /**
-     * Set of potential parameter types inferred by usage.
+     * List containing sets of potential parameter types inferred by usage.
      */
     parameterTypes: Set<string>[]
 
@@ -368,6 +368,8 @@ export interface TableInfo {
      */
     emitAsTable?: boolean
 }
+
+export type TableInfoWithClass = TableInfo & { className: string }
 
 export {
     BasicLuaType,

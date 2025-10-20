@@ -45,12 +45,12 @@ export class AnalysisReader extends BaseReader {
             return
         }
 
-        this.context.setReadingModule(identifier)
+        this.context.currentModule = identifier
 
         const scope = this.createScope(tree) as LuaModuleScope
         this.context.setModule(identifier, scope, this.readScope(scope))
 
-        this.context.setReadingModule()
+        this.context.currentModule = ''
         this.expressionCache.clear()
     }
 
@@ -160,7 +160,7 @@ export class AnalysisReader extends BaseReader {
         const lhs = this.getLuaExpression(args[0], scope)
         const meta = this.getLuaExpression(args[1], scope)
 
-        this.context.setMetatable(scope, lhs, meta)
+        this.context.typeResolver.resolveSetMetatable(scope, lhs, meta)
     }
 
     /**
@@ -483,7 +483,7 @@ export class AnalysisReader extends BaseReader {
                 const ident = node.identifier
                 const name =
                     ident?.type === 'Identifier' ? ident.name : undefined
-                const functionId = this.context.getFunctionID(node, name)
+                const functionId = this.context.getFunctionId(node, name)
                 return {
                     type: 'literal',
                     luaType: 'function',
@@ -491,7 +491,7 @@ export class AnalysisReader extends BaseReader {
                 }
 
             case 'TableConstructorExpression':
-                const tableId = this.context.getTableID(node)
+                const tableId = this.context.getTableId(node)
                 const fields = this.analyzeTableFields(node, scope)
                 this.context.setTableLiteralFields(scope, tableId, fields)
 
@@ -686,7 +686,7 @@ export class AnalysisReader extends BaseReader {
 
         // treat A = X.new(B) as setmetatable(A, B)
         // local o = ISPanel.new(self) → setmetatable(o, self)
-        this.context.setMetatable(scope, lhs, firstArg)
+        this.context.typeResolver.resolveSetMetatable(scope, lhs, firstArg)
     }
 
     /**
@@ -730,7 +730,7 @@ export class AnalysisReader extends BaseReader {
         const ident = node.identifier
         const name = ident?.type === 'Identifier' ? ident.name : undefined
 
-        const id = this.context.getFunctionID(node, name)
+        const id = this.context.getFunctionId(node, name)
         scope.id = id
 
         const isLocal = node.isLocal || parent.hasLocal(name)
@@ -825,7 +825,7 @@ export class AnalysisReader extends BaseReader {
             }
         }
 
-        const resolved = this.context.resolveItems(scope)
+        const resolved = this.context.typeResolver.resolveScope(scope)
         if (scope.parent) {
             scope.parent.items.push(resolved)
         }

@@ -129,11 +129,25 @@ export class BaseLuaScope {
 
     /**
      * Gets the ID associated with a local.
-     * @param name
-     * @returns
      */
     getLocalId(name: string): string | undefined {
         return this.localToId.get(name) ?? this.parent?.getLocalId(name)
+    }
+
+    /**
+     * Gets the name of a local associated with the given ID, if it's a local to this scope.
+     * Otherwise, returns the given ID.
+     */
+    getName(id: string): string {
+        return this.localIdToName(id) ?? id
+    }
+
+    /**
+     * Returns the local identifier for the `self` parameter, if one exists.
+     * Otherwise, creates one and returns it.
+     */
+    getOrAddSelf(): string {
+        return this.localToId.get('self') ?? this.addSelfParameter()
     }
 
     /**
@@ -173,7 +187,7 @@ export class BaseLuaScope {
      * Adds a local, parameter, or self parameter to the scope.
      */
     protected addLocalItem(name: string, type: string = 'local'): string {
-        const id = this.getNextLocalID(name, type)
+        const id = this.getNextLocalId(name, type)
         this.localToId.set(name, id)
         this.idToLocal.set(id, name)
 
@@ -183,7 +197,7 @@ export class BaseLuaScope {
     /**
      * Gets an ID to use for a local.
      */
-    protected getNextLocalID(name: string, type: string = 'local'): string {
+    protected getNextLocalId(name: string, type: string = 'local'): string {
         const nextIndex = BaseLuaScope.nextIndexMap.get(type) ?? 1
         BaseLuaScope.nextIndexMap.set(type, nextIndex + 1)
 
