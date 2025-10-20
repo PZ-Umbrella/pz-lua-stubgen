@@ -135,6 +135,22 @@ export class BaseLuaScope {
     }
 
     /**
+     * Gets the name of a local associated with the given ID, if it's a local.
+     * Otherwise, returns the given ID.
+     */
+    getName(id: string): string {
+        return this.localIdToName(id) ?? id
+    }
+
+    /**
+     * Returns the local identifier for the `self` parameter, if one exists.
+     * Otherwise, creates one and returns it.
+     */
+    getOrAddSelf(): string {
+        return this.localToId.get('self') ?? this.addSelfParameter()
+    }
+
+    /**
      * Checks whether a name is local and defined in this scope.
      */
     hasDefinedLocal(name?: string): boolean {

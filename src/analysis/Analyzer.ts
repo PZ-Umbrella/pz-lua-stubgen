@@ -18,6 +18,7 @@ export class Analyzer extends BaseReporter {
         super(args)
 
         this.context = new AnalysisContext({
+            analyzer: this,
             isRosettaInit: args.isRosettaInit,
             heuristics: args.heuristics,
         })
