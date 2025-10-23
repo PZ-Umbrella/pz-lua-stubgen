@@ -135,6 +135,8 @@ export class ClassResolver {
             newInfo.className = name
             newInfo.isLocalClass = true
 
+            this.mergeUnknownClass(newInfo)
+
             scope.items.push({
                 type: 'partial',
                 classInfo: {
@@ -337,6 +339,7 @@ export class ClassResolver {
         }
 
         this.removeEmptyDefinition(lhs.id)
+        this.mergeUnknownClass(tableInfo)
 
         scope.items.push({
             type: 'partial',
@@ -383,22 +386,7 @@ export class ClassResolver {
             return
         }
 
-        // check for existing unknown class
-        const globalName = lhsBase.id
-        let id = this.context.unknownClasses.get(globalName)
-        if (id) {
-            return id
-        }
-
-        // create a new table and add as an implied class if not found
-        id = this.context.newTableId(lhsBase.id)
-        this.context.unknownClasses.set(globalName, id)
-        const info = this.context.getTableInfo(id)
-        const added = this.tryAddImpliedClass(scope, lhsBase, info)
-
-        if (added) {
-            return id
-        }
+        return this.getUnknownClass(scope, lhsBase)
     }
 
     /**
@@ -459,6 +447,7 @@ export class ClassResolver {
             },
         })
 
+        this.mergeUnknownClass(info)
         return info as TableInfoWithClass
     }
 
@@ -622,6 +611,90 @@ export class ClassResolver {
     }
 
     /**
+     * Attempts to get or create a table for an unknown class.
+     * @param scope The current scope.
+     * @param expr The global reference expression to get the unknown class table for.
+     * @returns The table identifier.
+     */
+    protected getUnknownClass(
+        scope: LuaScope,
+        expr: LuaReference,
+    ): string | undefined {
+        const name = expr.id
+        let id = this.context.unknownClasses.get(name)
+        if (id) {
+            return id
+        }
+
+        id = this.context.newTableId(name)
+        this.context.unknownClasses.set(name, id)
+        const info = this.context.getTableInfo(id)
+
+        if (this.tryAddImpliedClass(scope, expr, info)) {
+            const toMerge = this.context.globalDefsToMerge
+
+            const set = toMerge.get(name) ?? new Set()
+            if (!toMerge.has(name)) {
+                toMerge.set(name, set)
+            }
+
+            set.add(id)
+            return id
+        }
+    }
+
+    /**
+     * Merges unknown class tables matching a class name into the class' definition.
+     * @param info The information object for the class table.
+     */
+    protected mergeUnknownClass(info: TableInfo) {
+        const globalName = info.className
+        if (!globalName) {
+            return
+        }
+
+        const toMergeSet = this.context.globalDefsToMerge.get(globalName)
+        if (!toMergeSet) {
+            return
+        }
+
+        this.context.globalDefsToMerge.delete(globalName)
+
+        for (const id of toMergeSet) {
+            const unknownInfo = this.context.getTableInfo(id)
+
+            // avoid duplicate class definitions
+            unknownInfo.isEmptyClass = true
+
+            for (const [name, unknownDefs] of unknownInfo.definitions) {
+                const defs = info.definitions.get(name)
+                if (!defs) {
+                    info.definitions.set(name, [...unknownDefs])
+                    continue
+                }
+
+                // single def which is an empty table literal → replace with unknown
+                // handles edge case of worldgen tables
+                const defExpr = defs.at(0)?.expression
+                if (!defExpr || defs.length !== 1) {
+                    continue
+                }
+
+                if (defExpr.type !== 'literal' || !defExpr.tableId) {
+                    continue
+                }
+
+                if (defExpr.fields && defExpr.fields.length > 0) {
+                    continue
+                }
+
+                defs.shift()
+                defs.push(...unknownDefs)
+            }
+        }
+    }
+
+    /**
      * Matches against a function definition to determine whether it's a closure-based class.
      * @param scope The current scope.
      * @param node The function to search.
@@ -756,6 +829,8 @@ export class ClassResolver {
         tableInfo.className = name
         tableInfo.isClosureClass = true
         tableInfo.isLocalClass = true
+        this.mergeUnknownClass(tableInfo)
+
         scope.items.push({
             type: 'partial',
             classInfo: {
