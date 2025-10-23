@@ -6,6 +6,7 @@ import type {
     AnalysisItem,
     FunctionInfo,
     LuaExpression,
+    LuaIndex,
     LuaMember,
     LuaReference,
     TableInfo,
@@ -352,7 +353,7 @@ export class ClassResolver {
     }
 
     /**
-     * Attempts to add a class based on the presence of a function declaration on an unknown global.
+     * Attempts to add a class based on the presence of a field assignment or a function declaration on an unknown global.
      * If the class exists in this module already, returns the existing class.
      *
      * This is intended to handle the case of cyclical dependency resolution.
@@ -364,11 +365,15 @@ export class ClassResolver {
      */
     tryAddUnknownClass(
         scope: LuaScope,
-        expr: LuaMember,
+        expr: LuaMember | LuaIndex,
         item: AnalysisItem,
     ): string | undefined {
-        // only add unknown classes from functions
-        if (item.type !== 'functionDefinition') {
+        // only add unknown classes from functions or assignments in module scope
+        const canAdd =
+            item.type === 'functionDefinition' ||
+            (item.type === 'assignment' && scope.type === 'module')
+
+        if (!canAdd) {
             return
         }
 

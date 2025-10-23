@@ -249,6 +249,19 @@ export class TypeResolver {
             case 'index':
                 const indexBase = [...this.resolveExpression(lhs.base)]
 
+                // definition on unknown global → unknown class for base
+                if (indexBase.length === 0) {
+                    const id = this.classResolver.tryAddUnknownClass(
+                        scope,
+                        lhs,
+                        item,
+                    )
+
+                    if (id) {
+                        indexBase.push(id)
+                    }
+                }
+
                 if (indexBase.length !== 1) {
                     break
                 }
@@ -279,7 +292,7 @@ export class TypeResolver {
                     },
                 )
 
-                // method definition on unknown global → unknown class for base
+                // definition on unknown global → unknown class for base
                 if (memberBase.length === 0) {
                     const id = this.classResolver.tryAddUnknownClass(
                         scope,
