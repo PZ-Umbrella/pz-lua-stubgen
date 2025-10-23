@@ -1,8 +1,12 @@
-import { LuaOperation } from '../../analysis'
 import { getExpressionString } from './get-expression-string'
-import { includeAsIs } from './include-as-is'
-import { isTernaryOperation } from './is-ternary-operation'
+import type { LuaExpression, LuaOperation } from '../../analysis'
 
+/**
+ * Gets a string representing a rewritten operation expression.
+ * @param expression The expression to get a literal string for.
+ * @param allowAmbiguous Flag for whether to allow union types.
+ * @param depth The depth of the expression within a table.
+ */
 export const getOperationString = (
     expression: LuaOperation,
     allowAmbiguous: boolean,
@@ -54,4 +58,41 @@ export const getOperationString = (
 
             return `${lhsString} ${expression.operator} ${rhsString}`
     }
+}
+
+/**
+ * Checks whether an expression should be rewritten as-is, as opposed to being wrapped in parentheses.
+ * @param expr The expression to check.
+ */
+const includeAsIs = (expr: LuaExpression): boolean => {
+    if (expr.type !== 'operation') {
+        return true
+    }
+
+    switch (expr.operator) {
+        case 'call':
+        case '..':
+        case '#':
+            return true
+
+        case '-':
+            // unary minus as-is, binary minus with parentheses
+            return expr.arguments.length === 1
+
+        default:
+            return false
+    }
+}
+
+/**
+ * Checks whether an expression is a boolean ternary operation (`X and Y or Z`).
+ * @param expr The expression to check.
+ */
+const isTernaryOperation = (expr: LuaExpression): boolean => {
+    if (expr.type !== 'operation' || expr.operator !== 'or') {
+        return false
+    }
+
+    const lhs = expr.arguments[0]
+    return lhs.type === 'operation' && lhs.operator === 'and'
 }

@@ -1,3 +1,9 @@
+/**
+ * Gets a string representing a set of types.
+ * @param types The set of types to convert to a string.
+ * @param allowAmbiguous Flag for whether to allow union types.
+ * @returns
+ */
 export const getTypeString = (
     types: Set<string>,
     allowAmbiguous: boolean = true,

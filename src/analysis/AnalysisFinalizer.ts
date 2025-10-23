@@ -1,6 +1,6 @@
 import { getLiteralKey, getLuaFieldKey, isEmptyClass } from '../helpers'
-import { AnalysisContext } from './AnalysisContext'
-import {
+import type { AnalysisContext } from './AnalysisContext'
+import type {
     AnalyzedClass,
     AnalyzedField,
     AnalyzedFunction,
@@ -15,7 +15,7 @@ import {
     ResolvedModule,
     ResolvedRequireInfo,
     ResolvedReturnInfo,
-    TableField,
+    LiteralTableField,
     TableKey,
 } from './types'
 
@@ -23,15 +23,22 @@ import {
  * Handles finalizing Lua modules and types.
  */
 export class AnalysisFinalizer {
+    /**
+     * The shared analysis context.
+     */
     protected context: AnalysisContext
 
+    /**
+     * Creates a new finalizer.
+     * @param context The analysis context.
+     */
     constructor(context: AnalysisContext) {
         this.context = context
     }
 
     /**
      * Finalizes the analyzed modules.
-     * @returns Map of file identifiers to analyzed modules.
+     * @returns Map associating file identifiers to analyzed modules.
      */
     finalize(): Map<string, AnalyzedModule> {
         const modules = new Map<string, AnalyzedModule>()
@@ -140,7 +147,7 @@ export class AnalysisFinalizer {
         }
 
         for (const clsDefs of clsMap.values()) {
-            this.finalizeClassFields(clsDefs, clsMap)
+            this.deduplicateClassFields(clsDefs, clsMap)
         }
 
         this.context.setCurrentReadingModule(undefined)
@@ -148,9 +155,53 @@ export class AnalysisFinalizer {
     }
 
     /**
+     * Removes class fields with an identical type in an ancestor class.
+     * @param clsDefs List of analyzed class definitions.
+     * @param clsMap Map of class names to matching analyzed class definitions.
+     */
+    protected deduplicateClassFields(
+        clsDefs: AnalyzedClass[],
+        clsMap: Map<string, AnalyzedClass[]>,
+    ) {
+        // remove fields with identical type in ancestor
+        for (const cls of clsDefs) {
+            if (!cls.extends) {
+                continue
+            }
+
+            const seen = new Set<string>()
+            const toRemove = new Set<string>()
+            for (const field of cls.fields) {
+                if (seen.has(field.name)) {
+                    continue
+                }
+
+                seen.add(field.name)
+
+                const ancestor = this.findMatchingAncestorField(
+                    field,
+                    cls.extends,
+                    clsMap,
+                )
+
+                if (ancestor) {
+                    toRemove.add(field.name)
+                }
+            }
+
+            if (toRemove.size === 0) {
+                continue
+            }
+
+            cls.fields = cls.fields.filter((x) => !toRemove.has(x.name))
+        }
+    }
+
+    /**
      * Finalizes an analyzed class.
      * @param cls The resolved information about the class.
-     * @param refs Map of IDs to expressions that represent them.
+     * @param refs Map of IDs to expressions that represent them. Used for expression rewriting.
+     * @returns The analyzed class, a flag for whether it should emit as a table, and additional resolved classes to include.
      */
     protected finalizeClass(
         cls: ResolvedClassInfo,
@@ -161,11 +212,11 @@ export class AnalysisFinalizer {
         extraClasses: ResolvedClassInfo[],
     ] {
         const info = this.context.getTableInfo(cls.tableId)
-        const isTable = info.emitAsTable ?? false
+        const emitAsTable = info.emitAsTable ?? false
         const isClassDefiner = cls.definingModule === this.context.currentModule
 
         const fields: AnalyzedField[] = []
-        const literalFields: TableField[] = []
+        const literalFields: LiteralTableField[] = []
         const staticFields: AnalyzedField[] = []
         const methods: AnalyzedFunction[] = []
         const functions: AnalyzedFunction[] = []
@@ -178,7 +229,7 @@ export class AnalysisFinalizer {
         const literalKeys = new Set<string>()
 
         const allowLiteralFields =
-            isClassDefiner && !this.context.isRosettaInit && !isTable
+            isClassDefiner && !this.context.isForRosetta && !emitAsTable
 
         for (const field of info.literalFields) {
             let key: TableKey | undefined
@@ -290,7 +341,7 @@ export class AnalysisFinalizer {
 
             const functionExpr = definingExprs.find((x) => {
                 return (
-                    (cls.generated || !x.functionLevel) &&
+                    (cls.emitLocal || !x.functionLevel) &&
                     !x.instance &&
                     x.expression
                 )
@@ -314,7 +365,7 @@ export class AnalysisFinalizer {
                 }
 
                 const func = this.finalizeFunction(id, name)
-                if (!isTable && func.isConstructor) {
+                if (!emitAsTable && func.isConstructor) {
                     const target =
                         indexer === ':' ? constructors : functionConstructors
 
@@ -417,10 +468,10 @@ export class AnalysisFinalizer {
             })
         }
 
-        if (isTable) {
+        if (emitAsTable) {
             const finalized: AnalyzedTable = {
                 name: cls.name,
-                local: cls.generated || info.isLocalClass,
+                local: cls.emitLocal || info.isLocalClass,
                 staticFields,
                 methods,
                 functions,
@@ -464,7 +515,7 @@ export class AnalysisFinalizer {
                             name: tableInfo.className,
                             tableId: tableInfo.id,
                             definingModule: tableInfo.definingModule,
-                            generated: tableInfo.isLocalClass,
+                            emitLocal: tableInfo.isLocalClass,
                         })
 
                         continue
@@ -502,7 +553,7 @@ export class AnalysisFinalizer {
             name: cls.name,
             extends: cls.base,
             deriveName: cls.deriveName,
-            local: cls.generated || info.isLocalClass,
+            local: cls.emitLocal || info.isLocalClass,
             fields,
             literalFields,
             staticFields,
@@ -518,50 +569,10 @@ export class AnalysisFinalizer {
     }
 
     /**
-     * Removes class fields with an identical type in an ancestor class.
-     * @param clsDefs List of class definitions.
-     * @param clsMap Map of class names to matching class definitions.
-     */
-    protected finalizeClassFields(
-        clsDefs: AnalyzedClass[],
-        clsMap: Map<string, AnalyzedClass[]>,
-    ) {
-        // remove fields with identical type in ancestor
-        for (const cls of clsDefs) {
-            if (!cls.extends) {
-                continue
-            }
-
-            const seen = new Set<string>()
-            const toRemove = new Set<string>()
-            for (const field of cls.fields) {
-                if (seen.has(field.name)) {
-                    continue
-                }
-
-                seen.add(field.name)
-
-                const ancestor = this.findMatchingAncestorField(
-                    field,
-                    cls.extends,
-                    clsMap,
-                )
-
-                if (ancestor) {
-                    toRemove.add(field.name)
-                }
-            }
-
-            if (toRemove.size === 0) {
-                continue
-            }
-
-            cls.fields = cls.fields.filter((x) => !toRemove.has(x.name))
-        }
-    }
-
-    /**
-     * Finalizes assignment definitions.
+     * Determines the information to emit for a list of definitions.
+     * @param defs The definition list.
+     * @param refs Map of IDs to expressions that represent them. Used for expression rewriting.
+     * @param seen A map of already seen table IDs to expressions to use for them. Used to avoid cycles.
      * @returns The expression and/or types to use in annotations.
      */
     protected finalizeDefinitions(
@@ -572,19 +583,20 @@ export class AnalysisFinalizer {
         let value: LuaExpression | undefined
 
         let includeTypes = true
-        const firstExpr = defs[0]
-        if (
+        const firstDef = defs[0]
+
+        // one def → rewrite unless it's a class reference or defined in a function
+        const rewriteSingleDef =
             defs.length === 1 &&
-            !firstExpr.functionLevel &&
-            !this.isLiteralClassTable(firstExpr.expression)
-        ) {
-            // one def → rewrite unless it's a class reference or defined in a function
-            value = this.finalizeExpression(firstExpr.expression, refs, seen)
+            !firstDef.functionLevel &&
+            !this.isLiteralClassTable(firstDef.expression)
+
+        if (rewriteSingleDef) {
+            value = this.finalizeExpression(firstDef.expression, refs, seen)
             includeTypes = value.type === 'literal' && value.luaType === 'nil'
         } else {
             // defined in literal → rewrite, but include types
             const literalDef = defs.find((x) => x.fromLiteral)
-
             if (literalDef) {
                 value = this.finalizeExpression(
                     literalDef.expression,
@@ -619,7 +631,10 @@ export class AnalysisFinalizer {
 
     /**
      * Finalizes an expression for rewriting.
-     * @param refs Map of local IDs to expressions that represent them.
+     * @param expression The expression to rewrite.
+     * @param refs Map of local IDs to expressions that represent them. Used for expression rewriting.
+     * @param seen A map of already seen table IDs to expressions to use for them. Used to avoid cycles.
+     * @returns The expression to use in annotations.
      */
     protected finalizeExpression(
         expression: LuaExpression,
@@ -796,10 +811,11 @@ export class AnalysisFinalizer {
 
     /**
      * Finalizes information about a require call.
+     * @param info The resolved information about the require.
      */
-    protected finalizeRequire(req: ResolvedRequireInfo): AnalyzedField {
+    protected finalizeRequire(info: ResolvedRequireInfo): AnalyzedField {
         return {
-            name: req.name,
+            name: info.name,
             types: new Set(),
             expression: {
                 type: 'operation',
@@ -812,7 +828,7 @@ export class AnalysisFinalizer {
                     {
                         type: 'literal',
                         luaType: 'string',
-                        literal: `"${req.module.replaceAll('"', '\\"')}"`,
+                        literal: `"${info.module.replaceAll('"', '\\"')}"`,
                     },
                 ],
             },
@@ -820,23 +836,23 @@ export class AnalysisFinalizer {
     }
 
     /**
-     * Finalizes module-level returns.
-     * @param ret Information about returns.
-     * @param refs Map of local identifiers to expressions.
+     * Finalizes a module-level return.
+     * @param info Information about a module-level return.
+     * @param refs Map of local IDs to expressions that represent them. Used for expression rewriting.
      */
     protected finalizeReturn(
-        ret: ResolvedReturnInfo,
+        info: ResolvedReturnInfo,
         refs: Map<string, LuaExpression | null>,
     ): AnalyzedReturn {
-        let expression: LuaExpression | undefined
         const types = new Set<string>()
 
-        if (ret.expressions.size === 1) {
+        let expression: LuaExpression | undefined
+        if (info.expressions.size === 1) {
             // one expression → include for rewrite
-            expression = [...ret.expressions][0]
-        } else if (ret.expressions.size === 0) {
+            expression = [...info.expressions][0]
+        } else if (info.expressions.size === 0) {
             // no expressions → use computed types
-            ret.types.forEach((x) => types.add(x))
+            info.types.forEach((x) => types.add(x))
         }
 
         // use value directly if possible
@@ -844,7 +860,7 @@ export class AnalysisFinalizer {
             expression = this.finalizeExpression(expression, refs)
         }
 
-        for (const expr of ret.expressions) {
+        for (const expr of info.expressions) {
             this.context.typeResolver
                 .resolve({ expression: expr })
                 .forEach((x) => types.add(x))
@@ -859,7 +875,8 @@ export class AnalysisFinalizer {
     /**
      * Finalizes information about a class static field.
      * @param expressions Assignment expressions.
-     * @param refs Map of local identifiers to expressions.
+     * @param refs Map of local IDs to expressions that represent them. Used for expression rewriting.
+     * @returns The expression and/or types to use in annotations.
      */
     protected finalizeStaticField(
         expressions: LuaExpressionInfo[],
@@ -911,8 +928,9 @@ export class AnalysisFinalizer {
     /**
      * Finalizes a global table definition for rewriting.
      * @param id The table identifier.
-     * @param refs Map of local identifiers to expressions.
-     * @param seen Map of already checked table IDs to expressions.
+     * @param refs Map of local IDs to expressions that represent them. Used for expression rewriting.
+     * @param seen A map of already seen table IDs to expressions to use for them. Used to avoid cycles.
+     * @returns The expression to use in annotations.
      */
     protected finalizeTable(
         id: string,
@@ -927,7 +945,7 @@ export class AnalysisFinalizer {
         seen.set(id, null)
         const info = this.context.getTableInfo(id)
 
-        const fields: TableField[] = []
+        const fields: LiteralTableField[] = []
 
         let nextAutoKey = 1
         for (let [defKey, defs] of info.definitions) {
@@ -978,7 +996,7 @@ export class AnalysisFinalizer {
                 }
             }
 
-            const field: TableField = {
+            const field: LiteralTableField = {
                 key,
                 value: value ?? {
                     type: 'literal',
@@ -1001,13 +1019,13 @@ export class AnalysisFinalizer {
         }
 
         seen.set(id, expression)
-
         return expression
     }
 
     /**
      * Finalizes Lua types for annotation.
      * This removes internal IDs and deals with narrowing failures.
+     * @param types The set of types to finalize.
      */
     protected finalizeTypes(types: Set<string>): Set<string> {
         // treat explicit unknowns as just unknown
@@ -1078,8 +1096,10 @@ export class AnalysisFinalizer {
     }
 
     /**
-     * Finds a matching field in a class ancestor to determine whether
-     * it can be removed from a class.
+     * Finds a matching field in a class ancestor to determine whether it can be removed from a class.
+     * @param field The field to find.
+     * @param baseCls The name of the class to check.
+     * @param clsMap Map of class names to matching analyzed class definitions.
      */
     protected findMatchingAncestorField(
         field: AnalyzedField,
@@ -1129,6 +1149,7 @@ export class AnalysisFinalizer {
 
     /**
      * Gets a set of locals that are referenced by analyzed members.
+     * @param mod The module to collect locals from.
      */
     protected getReferences(mod: ResolvedModule): Set<string> {
         const stack: [LuaExpression, number][] = []
@@ -1251,15 +1272,16 @@ export class AnalysisFinalizer {
 
     /**
      * Checks whether an expression is a literal table that is associated with a class definition.
+     * @param expr The expression to check.
      */
-    protected isLiteralClassTable(expr: LuaExpression) {
+    protected isLiteralClassTable(expr: LuaExpression): boolean {
         if (expr.type !== 'literal' || expr.luaType !== 'table') {
-            return
+            return false
         }
 
         const id = expr.tableId
         if (!id) {
-            return
+            return false
         }
 
         const info = this.context.getTableInfo(id)

@@ -1,7 +1,6 @@
 import ast from 'luaparse'
-import { LuaDependencyInfo } from './types'
-import { ExpressionOrHasBody, LuaScope } from '../scopes'
-import { BaseReader } from '../base'
+import type { LuaDependencyInfo } from './types'
+import { BaseReader, ExpressionOrHasBody, LuaScope } from '../common'
 
 /**
  * Handles reading dependency information from Lua files.
@@ -9,6 +8,7 @@ import { BaseReader } from '../base'
 export class DependencyReader extends BaseReader {
     /**
      * Determines dependency information for a Lua file.
+     * @param filePath The path of the Lua file to read.
      */
     async getDependencyInfo(
         filePath: string,
@@ -28,6 +28,9 @@ export class DependencyReader extends BaseReader {
 
     /**
      * Collects local and global references on the top level of the given expressions.
+     * @param expressions List of expressions to collect references from.
+     * @param scope The current scope.
+     * @param info The info object to add collected references to.
      */
     protected collectReferences(
         expressions: ExpressionOrHasBody[],
@@ -141,7 +144,8 @@ export class DependencyReader extends BaseReader {
     }
 
     /**
-     * Tracks global reads, global writes, and require calls.
+     * Tracks global reads, global writes, and require calls to determine file dependencies.
+     * @param tree The top-level AST node for the file.
      */
     protected trackDependencies(tree: ast.Chunk): LuaDependencyInfo {
         const stack: LuaScope[] = []

@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
-import { ResolveArgs, Resolver } from './dependency-resolution'
+import { ResolveArgs, DependencyResolver } from './dependency-resolution'
 import { AnalyzeArgs, Analyzer } from './analysis'
 import { AnnotateArgs, Annotator } from './annotation'
 import {
@@ -315,7 +315,7 @@ yargs(hideBin(process.argv))
         'Reports on requires, global reads/writes, and the resolved analysis order',
         reportDepsCommand,
         (async (args: ResolveArgs) =>
-            await new Resolver(args).generateReport()) as any,
+            await new DependencyResolver(args).generateReport()) as any,
     )
     .strict()
     .demandCommand()

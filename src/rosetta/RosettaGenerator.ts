@@ -1,23 +1,42 @@
 import path from 'path'
 import YAML from 'yaml'
-import { log } from '../logger'
-import { BaseAnnotator } from '../base'
-import { AnalyzedModule } from '../analysis/types'
-import { RosettaGenerateArgs } from './types'
+import { BaseGenerator } from '../common'
+import type { RosettaGenerateArgs } from './types'
+import type { AnalyzedModule } from '../analysis/types'
+
 import {
     convertAnalyzedClass,
     convertAnalyzedFields,
     convertAnalyzedFunctions,
     convertAnalyzedTable,
-    outputFile,
+    log,
+    writeFile,
     time,
 } from '../helpers'
 
-export class RosettaGenerator extends BaseAnnotator {
+/**
+ * Handles generation of Rosetta data files.
+ */
+export class RosettaGenerator extends BaseGenerator {
+    /**
+     * The format to use for output Rosetta files.
+     */
     protected rosettaFormat: 'json' | 'yml'
+
+    /**
+     * Flag for whether types in existing Rosetta files should be kept.
+     */
     protected keepTypes: boolean
+
+    /**
+     * Pattern for files to ignore.
+     */
     protected skipPattern: RegExp | undefined
 
+    /**
+     * Creates a new generator.
+     * @param args Arguments for file generation.
+     */
     constructor(args: RosettaGenerateArgs) {
         super(args)
 
@@ -29,6 +48,10 @@ export class RosettaGenerator extends BaseAnnotator {
         }
     }
 
+    /**
+     * Generates a string containing Rosetta data for an analyzed module.
+     * @param mod The module to generate Rosetta data for.
+     */
     generateRosetta(mod: AnalyzedModule): string {
         const rosettaFile = this.rosetta.files[mod.id]
 
@@ -113,7 +136,11 @@ export class RosettaGenerator extends BaseAnnotator {
         return out.replaceAll('\r', '').trimEnd() + '\n'
     }
 
-    async run() {
+    /**
+     * Runs Rosetta generation.
+     * @returns A list of analyzed modules.
+     */
+    async run(): Promise<AnalyzedModule[]> {
         const modules = await this.getModules(true)
         await this.writeModules(modules)
 
@@ -123,6 +150,12 @@ export class RosettaGenerator extends BaseAnnotator {
         return modules
     }
 
+    /**
+     * Generates Rosetta files and writes them to the output directory.
+     * @param modules The modules to convert and write.
+     * @param taskName The name of the task for log output.
+     * @param skipIds A set of module IDs that should be skipped.
+     */
     protected async writeModules(
         modules: AnalyzedModule[],
         taskName = 'Rosetta initialization',
@@ -132,7 +165,7 @@ export class RosettaGenerator extends BaseAnnotator {
 
         await time(taskName, async () => {
             const outDir = this.outDirectory
-            const suffix = this.rosettaFormat === 'json' ? '.json' : '.yml'
+            const extension = this.rosettaFormat === 'json' ? '.json' : '.yml'
 
             for (const mod of modules) {
                 if (skipIds.has(mod.id) || this.skipPattern?.test(mod.id)) {
@@ -140,7 +173,7 @@ export class RosettaGenerator extends BaseAnnotator {
                 }
 
                 const outFile = path.resolve(
-                    path.join(outDir, this.rosettaFormat, mod.id + suffix),
+                    path.join(outDir, this.rosettaFormat, mod.id + extension),
                 )
 
                 let data: string
@@ -155,7 +188,7 @@ export class RosettaGenerator extends BaseAnnotator {
                 }
 
                 try {
-                    await outputFile(outFile, data)
+                    await writeFile(outFile, data)
                 } catch (e) {
                     log.error(`Failed to write file '${outFile}': ${e}`)
                 }

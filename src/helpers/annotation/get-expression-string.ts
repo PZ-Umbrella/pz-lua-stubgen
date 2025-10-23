@@ -2,6 +2,12 @@ import { LuaExpression } from '../../analysis'
 import { getLiteralString } from './get-literal-string'
 import { getOperationString } from './get-operation-string'
 
+/**
+ * Gets a string to use to rewrite an expression.
+ * @param expression The expression to convert.
+ * @param allowAmbiguous Flag for whether to allow union types.
+ * @param depth The depth of the expression within a table.
+ */
 export const getExpressionString = (
     expression: LuaExpression,
     allowAmbiguous: boolean = true,
@@ -54,6 +60,10 @@ export const getExpressionString = (
     }
 }
 
+/**
+ * Determines whether to include parentheses on a member or index expression base.
+ * @param base The base expression.
+ */
 const doBaseParentheses = (base: LuaExpression): boolean => {
     switch (base.type) {
         case 'reference':

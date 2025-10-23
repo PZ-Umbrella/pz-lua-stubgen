@@ -1,15 +1,27 @@
-import { TableField } from '../../analysis'
-import { RosettaField } from '../../rosetta'
 import { getExpressionString } from './get-expression-string'
-import { getFunctionPrefixFromExpression } from './get-function-prefix-from-expression'
+import { getFunctionAnnotationFromExpression } from './get-function-annotation-from-expression'
 import { getRosettaTypeString } from './get-rosetta-type-string'
 import { getTypeString } from './get-type-string'
 import { getValueString } from './get-value-string'
 import { isLiteralTable } from './is-literal-table'
 import { writeNotes } from './write-notes'
+import type { LiteralTableField } from '../../analysis'
+import type { RosettaField } from '../../rosetta'
 
+/**
+ * Writes table fields to an output array for expression rewriting.
+ * This does not include the `{` or `}` characters of the table initializer.
+ *
+ * @param fields Literal table fields to write.
+ * @param out The output string array.
+ * @param allowAmbiguous Flag for whether to allow union types.
+ * @param depth The depth of the expression within a table.
+ * @param writtenFields The set of already written fields.
+ * @param rosettaFields Map associating field names to Rosetta fields.
+ * @returns The set of written fields.
+ */
 export const writeTableFields = (
-    fields: TableField[],
+    fields: LiteralTableField[],
     out: string[],
     allowAmbiguous: boolean,
     depth: number = 1,
@@ -86,7 +98,7 @@ export const writeTableFields = (
 
         let funcString: string | undefined
         if (!typeString && field.value.type === 'literal') {
-            funcString = getFunctionPrefixFromExpression(
+            funcString = getFunctionAnnotationFromExpression(
                 field.value,
                 allowAmbiguous,
                 depth,

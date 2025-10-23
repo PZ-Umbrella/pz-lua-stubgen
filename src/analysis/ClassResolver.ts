@@ -1,8 +1,8 @@
 import type ast from 'luaparse'
 import { getLuaFieldKey, readLuaStringLiteral } from '../helpers'
-import { LuaScope } from '../scopes'
-import { AnalysisContext } from './AnalysisContext'
-import {
+import type { LuaScope } from '../common'
+import type { AnalysisContext } from './AnalysisContext'
+import type {
     AnalysisItem,
     FunctionInfo,
     LuaExpression,
@@ -39,10 +39,10 @@ export class ClassResolver {
     /**
      * Adds partial items for classes referenced in an expression.
      * @param scope The current scope.
-     * @param expression The expression to check.
+     * @param expr The expression to check.
      */
-    addSeenClasses(scope: LuaScope, expression: LuaExpression) {
-        switch (expression.type) {
+    addSeenClasses(scope: LuaScope, expr: LuaExpression) {
+        switch (expr.type) {
             case 'literal':
             case 'operation':
             case 'require':
@@ -50,11 +50,11 @@ export class ClassResolver {
 
             case 'index':
             case 'member':
-                this.addSeenClasses(scope, expression.base)
+                this.addSeenClasses(scope, expr.base)
                 return
         }
 
-        const types = this.typeResolver.resolve({ expression })
+        const types = this.typeResolver.resolve({ expression: expr })
         if (types.size !== 1) {
             return
         }
@@ -74,7 +74,7 @@ export class ClassResolver {
     }
 
     /**
-     * Determines the class name to use based on a field assignment lhs expression.
+     * Determines the class name to use based on a field assignment left-hand-side expression.
      * For member expressions, this will create a class name in the format `X.Y.Z`.
      * For references, it will use the variable name (local or global).
      *
@@ -82,7 +82,7 @@ export class ClassResolver {
      * of those, this will return `undefined`.
      *
      * @param scope The current scope.
-     * @param expr The expression to extract a name from.
+     * @param expr The expression to determine a name from.
      * @return The name to use for the class.
      */
     getFieldClassName(
@@ -114,6 +114,7 @@ export class ClassResolver {
     /**
      * Attempts to create a partial class from an assignment of a call result to a field.
      * This handles `:derive` and UI nodes.
+     *
      * @param scope The current scope.
      * @param lhs The left side of the assignment.
      * @param rhs The right side of the assignment.
@@ -140,7 +141,7 @@ export class ClassResolver {
                     tableId: newId,
                     base,
                     deriveName,
-                    generated: true,
+                    emitLocal: true,
                     definingModule: this.context.currentModule,
                 },
             })
@@ -170,10 +171,11 @@ export class ClassResolver {
     /**
      * Attempts to create a class from a function definition on a table.
      * This includes closure-based classes and classes implied from the existence of a `:new` method.
+     *
      * @param scope The current scope.
-     * @param node The method node.
-     * @param info Analysis information for the method.
-     * @param identExpr Information about the method identifier.
+     * @param node The function node.
+     * @param info Analysis information for the function.
+     * @param identExpr Information about the function identifier expression.
      */
     tryAddFromFunctionDefinition(
         scope: LuaScope,
@@ -191,48 +193,6 @@ export class ClassResolver {
 
         if (!addedClosureClass) {
             this.tryAddImpliedFromMethod(scope, info, identExpr)
-        }
-    }
-
-    /**
-     * Attempts to add a class based on the presence of a function declaration on an unknown global.
-     * If the class exists in this module already, returns the existing class.
-     * @param scope The current scope.
-     * @param expr An expression representing the function identifier node.
-     * @param item An analysis item. If it's not a function definition, this fails.
-     * @returns The table ID to use for the unknown class.
-     */
-    tryAddUnknownClass(
-        scope: LuaScope,
-        expr: LuaMember,
-        item: AnalysisItem,
-    ): string | undefined {
-        // only add unknown classes from functions
-        if (item.type !== 'functionDefinition') {
-            return
-        }
-
-        // require unknown global reference for the class name
-        const lhsBase = expr.base
-        if (lhsBase.type !== 'reference' || lhsBase.id.startsWith('@')) {
-            return
-        }
-
-        // check for existing unknown class
-        const globalName = lhsBase.id
-        let id = this.context.unknownClasses.get(globalName)
-        if (id) {
-            return id
-        }
-
-        // create a new table and add as an implied class if not found
-        id = this.context.newTableId(lhsBase.id)
-        this.context.unknownClasses.set(globalName, id)
-        const info = this.context.getTableInfo(id)
-        const added = this.tryAddImpliedClass(scope, lhsBase, info)
-
-        if (added) {
-            return id
         }
     }
 
@@ -284,7 +244,7 @@ export class ClassResolver {
             classInfo: {
                 name,
                 tableId: tableInfo.id,
-                generated: isLocal,
+                emitLocal: isLocal,
                 definingModule: tableInfo.definingModule,
             },
         })
@@ -298,7 +258,7 @@ export class ClassResolver {
      * @param lhs The left side of the assignment.
      * @param rhs The right side of the assignment.
      * @returns Returns a string class ID if a class was added.
-     * Otherwise, returns a boolean representing whether searching for a partial should be terminated.
+     * Otherwise, returns a flag for whether searching for a partial should be terminated.
      */
     tryAddPartial(
         scope: LuaScope,
@@ -392,6 +352,51 @@ export class ClassResolver {
     }
 
     /**
+     * Attempts to add a class based on the presence of a function declaration on an unknown global.
+     * If the class exists in this module already, returns the existing class.
+     *
+     * This is intended to handle the case of cyclical dependency resolution.
+     *
+     * @param scope The current scope.
+     * @param expr An object representing the function identifier expression.
+     * @param item An analysis item. If it's not a function definition, this fails.
+     * @returns The table ID to use for the class.
+     */
+    tryAddUnknownClass(
+        scope: LuaScope,
+        expr: LuaMember,
+        item: AnalysisItem,
+    ): string | undefined {
+        // only add unknown classes from functions
+        if (item.type !== 'functionDefinition') {
+            return
+        }
+
+        // require unknown global reference for the class name
+        const lhsBase = expr.base
+        if (lhsBase.type !== 'reference' || lhsBase.id.startsWith('@')) {
+            return
+        }
+
+        // check for existing unknown class
+        const globalName = lhsBase.id
+        let id = this.context.unknownClasses.get(globalName)
+        if (id) {
+            return id
+        }
+
+        // create a new table and add as an implied class if not found
+        id = this.context.newTableId(lhsBase.id)
+        this.context.unknownClasses.set(globalName, id)
+        const info = this.context.getTableInfo(id)
+        const added = this.tryAddImpliedClass(scope, lhsBase, info)
+
+        if (added) {
+            return id
+        }
+    }
+
+    /**
      * Adds an Atom UI class definition.
      * @param scope The current scope.
      * @param name The class name.
@@ -418,7 +423,7 @@ export class ClassResolver {
                 continue
             }
 
-            // functions with self → methods
+            // mark functions with initial `self` parameter as methods
             const def = defs[0]
             const expr = def.expression
             if (expr.type !== 'literal' || !expr.functionId) {
@@ -432,7 +437,7 @@ export class ClassResolver {
 
             funcInfo.identifierExpression = {
                 type: 'member',
-                base: { type: 'reference', id: '@generated' },
+                base: { type: 'reference', id: name },
                 member: getLuaFieldKey(field),
                 indexer: ':',
             }
@@ -444,7 +449,7 @@ export class ClassResolver {
                 name,
                 tableId,
                 base,
-                generated: true,
+                emitLocal: true,
                 definingModule: this.context.currentModule,
             },
         })
@@ -560,7 +565,8 @@ export class ClassResolver {
     }
 
     /**
-     * Searches a function body for a `setmetatable` call with a table that includes an `__index` field.
+     * Searches the top level of a function body for a `setmetatable` call with a table
+     * that includes an `__index` field.
      * This is used to avoid adding closure-based classes where they shouldn't be added.
      * @returns Flag for whether a matching call was found.
      */
@@ -615,7 +621,7 @@ export class ClassResolver {
      * @param scope The current scope.
      * @param node The function to search.
      * @param info Analysis information about the function.
-     * @param identExpr The function identifier.
+     * @param identExpr The function identifier expression.
      * @returns A flag representing whether a class was added.
      */
     protected tryAddClosureClass(
@@ -629,7 +635,7 @@ export class ClassResolver {
             return false
         }
 
-        // setmetatable instances should be handled elsewhere
+        // functions with a setmetatable call are handled elsewhere
         if (this.findSetIndexedMetatable(node)) {
             return false
         }
@@ -752,7 +758,7 @@ export class ClassResolver {
                 tableId,
                 definingModule: this.context.currentModule,
                 base: baseClass,
-                generated: true,
+                emitLocal: true,
             },
         })
 
@@ -904,6 +910,7 @@ export class ClassResolver {
     /**
      * Matches an assignment against a definition of a UI node.
      * Creates an Atom UI class if successful.
+     *
      * @param scope The current scope.
      * @param lhs The left side of the assignment.
      * @param rhs The right side of the assignment.

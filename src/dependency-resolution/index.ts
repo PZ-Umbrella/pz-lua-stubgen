@@ -1,3 +1,3 @@
 export type * from './types'
-export { Resolver } from './Resolver'
+export { DependencyResolver } from './DependencyResolver'
 export { DependencyReader } from './DependencyReader'

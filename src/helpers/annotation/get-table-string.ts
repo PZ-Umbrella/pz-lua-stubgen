@@ -1,6 +1,12 @@
-import { LuaExpression } from '../../analysis'
 import { writeTableFields } from './write-table-fields'
+import type { LuaExpression } from '../../analysis'
 
+/**
+ * Gets a string to use to rewrite a table expression.
+ * @param expression The table expression to rewrite.
+ * @param allowAmbiguous Flag for whether to allow union types.
+ * @param depth The depth of the expression within a table.
+ */
 export const getTableString = (
     expression: LuaExpression,
     allowAmbiguous: boolean,

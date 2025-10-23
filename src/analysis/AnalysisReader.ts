@@ -1,30 +1,41 @@
-import ast from 'luaparse'
-import { AnalysisContext } from './AnalysisContext'
-import { ExpressionOrHasBody, LuaModuleScope, LuaScope } from '../scopes'
+import type ast from 'luaparse'
+import type { AnalysisContext } from './AnalysisContext'
+import type { ExpressionOrHasBody, LuaModuleScope, LuaScope } from '../common'
+import { readLuaStringLiteral } from '../helpers'
+
+import type {
+    AnalysisItem,
+    BasicLuaType,
+    LuaExpression,
+    LiteralTableField,
+    TableKey,
+} from './types'
 
 import {
     AnyCallExpression,
     AssignmentLHS,
     BaseReader,
     BasicLiteral,
-} from '../base'
-
-import {
-    AnalysisItem,
-    BasicLuaType,
-    LuaExpression,
-    TableField,
-    TableKey,
-} from './types'
-import { readLuaStringLiteral } from '../helpers'
+} from '../common'
 
 /**
  * Handles reading Lua files for analysis.
  */
 export class AnalysisReader extends BaseReader {
+    /**
+     * The shared analysis context.
+     */
     protected context: AnalysisContext
+
+    /**
+     * Associates AST nodes to expression objects used to represent them.
+     */
     protected expressionCache: Map<ast.Node, LuaExpression>
 
+    /**
+     * Creates a new analysis reader.
+     * @param context The analysis context.
+     */
     constructor(context: AnalysisContext) {
         super()
         this.context = context
@@ -32,9 +43,11 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Reads information about module definitions in a Lua file.
+     * Prepares analysis information for a Lua file.
+     * @param identifier The file identifier.
+     * @param filename The filename to read from.
      */
-    async readModuleInfo(identifier: string, filename: string) {
+    async analyzeModule(identifier: string, filename: string) {
         const content = await this.readFileContents(filename)
         if (content === undefined) {
             return
@@ -48,7 +61,7 @@ export class AnalysisReader extends BaseReader {
         this.context.setCurrentReadingModule(identifier)
 
         const scope = this.createScope(tree) as LuaModuleScope
-        this.context.setModule(identifier, scope, this.readScope(scope))
+        this.context.setResolvedModule(identifier, scope, this.readScope(scope))
 
         this.context.setCurrentReadingModule(undefined)
         this.expressionCache.clear()
@@ -56,6 +69,8 @@ export class AnalysisReader extends BaseReader {
 
     /**
      * Creates analysis items for variable assignment.
+     * @param node The assignment statement node to analyze.
+     * @param scope The current scope.
      */
     protected analyzeAssignment(
         node: ast.LocalStatement | ast.AssignmentStatement,
@@ -86,7 +101,7 @@ export class AnalysisReader extends BaseReader {
                 case 'CallExpression':
                 case 'TableCallExpression':
                 case 'StringCallExpression':
-                    this.analyzeCallAssignment(scope, node, lhs, rhs, i + 1)
+                    this.analyzeCallAssignment(node, scope, lhs, rhs, i + 1)
                     break
 
                 default:
@@ -129,8 +144,8 @@ export class AnalysisReader extends BaseReader {
 
         for (let i = node.init.length; i < node.variables.length; i++) {
             this.analyzeCallAssignment(
-                scope,
                 node,
+                scope,
                 node.variables[i],
                 last,
                 i - node.init.length + 2,
@@ -139,7 +154,9 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Analyzes `setmetatable` calls.
+     * Analyzes calls to perform type resolution based on `setmetatable`.
+     * @param node The call statement node to analyze.
+     * @param scope The current scope.
      */
     protected analyzeCall(node: ast.CallStatement, scope: LuaScope) {
         const expr = node.expression
@@ -165,26 +182,29 @@ export class AnalysisReader extends BaseReader {
 
     /**
      * Analyzes assignment to the result of a function call.
+     * @param node The assignment statement node to analyze.
+     * @param scope The current scope.
+     * @param lhs The left side of the assignment.
+     * @param rhs The right side of the assignment.
+     * @param index The 1-indexed index of the return to use from the assignment.
      */
     protected analyzeCallAssignment(
+        node: ast.LocalStatement | ast.AssignmentStatement,
         scope: LuaScope,
-        node: ast.Node,
         lhs: AssignmentLHS,
         rhs: AnyCallExpression,
         index: number,
     ) {
-        const mod = this.readRequire(rhs)
-        if (mod) {
+        const isLocal = node.type === 'LocalStatement'
+
+        const requiredMod = this.readRequire(rhs)
+        if (requiredMod) {
             this.context.addAssignment(scope, {
                 type: 'requireAssignment',
-                lhs: this.getLuaExpression(
-                    lhs,
-                    scope,
-                    node.type === 'LocalStatement',
-                ),
+                lhs: this.getLuaExpression(lhs, scope, isLocal),
                 rhs: {
                     type: 'require',
-                    module: mod,
+                    module: requiredMod,
                 },
                 index,
             })
@@ -193,11 +213,7 @@ export class AnalysisReader extends BaseReader {
         }
 
         const rhsExpression = this.getLuaExpression(rhs, scope)
-        const lhsExpression = this.getLuaExpression(
-            lhs,
-            scope,
-            node.type === 'LocalStatement',
-        )
+        const lhsExpression = this.getLuaExpression(lhs, scope, isLocal)
 
         this.context.addAssignment(scope, {
             type: 'assignment',
@@ -207,26 +223,28 @@ export class AnalysisReader extends BaseReader {
         })
 
         const checkNewAssign =
-            node.type === 'LocalStatement' ||
+            isLocal ||
             (lhsExpression.type === 'reference' &&
                 lhsExpression.id.startsWith('@'))
 
         if (checkNewAssign) {
-            this.handleNewAssignment(scope, lhsExpression, rhsExpression)
+            this.checkNewAssignment(scope, lhsExpression, rhsExpression)
         }
     }
 
     /**
      * Analyzes a table constructor.
+     * @param node The table constructor node to analyze.
+     * @param scope The current scope.
      */
     protected analyzeTableFields(
-        cons: ast.TableConstructorExpression,
+        node: ast.TableConstructorExpression,
         scope: LuaScope,
     ) {
-        const fields: TableField[] = []
+        const fields: LiteralTableField[] = []
 
         let nextIdx = 1
-        for (const field of cons.fields) {
+        for (const field of node.fields) {
             let key: TableKey
             switch (field.type) {
                 case 'TableValue':
@@ -278,7 +296,9 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Analyzes how items are used within the node.
+     * Analyzes how items are used within a node.
+     * @param node The node to analyze.
+     * @param scope The current scope.
      */
     protected analyzeUsage(node: ast.Node, scope: LuaScope) {
         const stack = [node]
@@ -455,7 +475,57 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
+     * Matches an assignment against `X.new(self, ...)`.
+     * If a match is found, it is treated as a `setmetatable` call.
+     * @param scope The current scope.
+     * @param lhs The left side of the assignment.
+     * @param rhs The right side of the assignment.
+     */
+    protected checkNewAssignment(
+        scope: LuaScope,
+        lhs: LuaExpression,
+        rhs: LuaExpression,
+    ) {
+        if (lhs.type !== 'reference') {
+            return
+        }
+
+        if (rhs.type !== 'operation') {
+            return
+        }
+
+        // A = X.Y(B, ...)
+        if (rhs.operator !== 'call' || rhs.arguments.length < 2) {
+            return
+        }
+
+        // A = X.Y(B, ...)
+        const callBase = rhs.arguments[0]
+        if (callBase?.type !== 'member' || callBase.indexer !== '.') {
+            return
+        }
+
+        // A = X.new(B, ...)
+        if (callBase.member !== 'new') {
+            return
+        }
+
+        // B is local identifier
+        const firstArg = rhs.arguments[1]
+        if (firstArg?.type !== 'reference' || !firstArg.id.startsWith('@')) {
+            return
+        }
+
+        // treat A = X.new(B) as setmetatable(A, B)
+        // local o = ISPanel.new(self) → setmetatable(o, self)
+        this.context.typeResolver.resolveSetMetatable(scope, lhs, firstArg)
+    }
+
+    /**
      * Creates an object representing a Lua expression.
+     * @param node The expression node to create an expression object for.
+     * @param scope The current scope.
+     * @param isNewLocal Flag for whether an identifier is a new local that should be marked as such.
      */
     protected createLuaExpression(
         node: ast.Expression,
@@ -575,6 +645,7 @@ export class AnalysisReader extends BaseReader {
 
     /**
      * Gets the identifier bases used in an indexer or member assignment.
+     * @param lhs The left side of an assignment.
      */
     protected getAssignmentBases(lhs: AssignmentLHS): ast.Expression[] {
         if (lhs.type === 'Identifier') {
@@ -592,12 +663,6 @@ export class AnalysisReader extends BaseReader {
                 case 'IndexExpression':
                     bases.push(expr.base)
                     stack.push(expr.base)
-                    stack.push(
-                        expr.type === 'IndexExpression'
-                            ? expr.index
-                            : expr.identifier,
-                    )
-
                     break
             }
         }
@@ -606,8 +671,8 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Returns the Lua type for a string, a number,
-     * a boolean, or nil.
+     * Returns the Lua type name for a string, a number, a boolean, or nil.
+     * @param expr The expression to return the type for.
      */
     protected getBasicLiteralType(expr: BasicLiteral): BasicLuaType
     protected getBasicLiteralType(
@@ -629,7 +694,10 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Creates an object representing a Lua expression.
+     * Gets or creates an object representing a Lua expression.
+     * @param node The expression node to get or create an expression object for.
+     * @param scope The current scope.
+     * @param isNewLocal Flag for whether an identifier is a new local that should be marked as such.
      */
     protected getLuaExpression(
         node: ast.Expression,
@@ -647,54 +715,12 @@ export class AnalysisReader extends BaseReader {
     }
 
     /**
-     * Handles assignment to `X.new(self, ...)`.
-     */
-    protected handleNewAssignment(
-        scope: LuaScope,
-        lhs: LuaExpression,
-        rhs: LuaExpression,
-    ) {
-        if (lhs.type !== 'reference') {
-            return
-        }
-
-        if (rhs.type !== 'operation') {
-            return
-        }
-
-        // A = X.Y(B, ...)
-        if (rhs.operator !== 'call' || rhs.arguments.length < 2) {
-            return
-        }
-
-        // A = X.Y(B, ...)
-        const callBase = rhs.arguments[0]
-        if (callBase?.type !== 'member' || callBase.indexer !== '.') {
-            return
-        }
-
-        // A = X.new(B, ...)
-        if (callBase.member !== 'new') {
-            return
-        }
-
-        // B is local identifier
-        const firstArg = rhs.arguments[1]
-        if (firstArg?.type !== 'reference' || !firstArg.id.startsWith('@')) {
-            return
-        }
-
-        // treat A = X.new(B) as setmetatable(A, B)
-        // local o = ISPanel.new(self) → setmetatable(o, self)
-        this.context.typeResolver.resolveSetMetatable(scope, lhs, firstArg)
-    }
-
-    /**
-     * Creates a new Lua scope object.
+     * Performs processing on a newly-created scope.
+     * @param scope The new scope.
      */
     protected processNewScope(scope: LuaScope) {
         const parent = scope.parent as LuaScope
-        if (!parent) {
+        if (!parent || scope.type === 'module') {
             // no processing needed for modules
             return
         }
@@ -722,10 +748,7 @@ export class AnalysisReader extends BaseReader {
             return
         }
 
-        if (scope.type !== 'function') {
-            return
-        }
-
+        // handle function scopes
         const node = scope.node
         const ident = node.identifier
         const name = ident?.type === 'Identifier' ? ident.name : undefined
@@ -776,6 +799,7 @@ export class AnalysisReader extends BaseReader {
 
     /**
      * Analyzes statements in the scope's body.
+     * @param scope The scope to read.
      */
     protected readScope(scope: LuaScope) {
         for (const node of scope.body) {
@@ -835,6 +859,8 @@ export class AnalysisReader extends BaseReader {
 
     /**
      * Reads scoped blocks within the given expressions.
+     * @param expressions The expressions to read scoped blocks within.
+     * @param scope The current scope.
      */
     protected readScopedBlocks(
         expressions: ExpressionOrHasBody[],
