@@ -1,19 +1,32 @@
 # pz-lua-stubgen
 
-A command-line tool for generating Lua typestubs that are compatible with [lua-language-server](https://github.com/LuaLS/lua-language-server).
+A command-line tool for generating Lua typestubs that are compatible with [EmmyLua](https://github.com/EmmyLuaLs/emmylua-analyzer-rust)
+and [LuaLS](https://github.com/LuaLS/lua-language-server).
 
-The generated stubs can be found in the [pz-lua-stubs](https://github.com/omarkmu/pz-lua-stubs) repository.
+The primary purpose of this tool is to generate the Lua typestubs included in [Umbrella](https://github.com/PZ-Umbrella/Umbrella).
+Since it's made with Project Zomboid in mind, it includes some heuristics and class definitions that are specific to that codebase.
 
-## Usage
+## Installation
+You can install the tool using `npm`:
 
-The primary command of the tool generates typestubs given a Lua source directory.
-From the top-level directory:
 ```
 npm i
 npm run build
-pz-lua-stubgen -i <DIRECTORY> -o <DIRECTORY>
+```
+
+## Usage
+The primary command of the tool generates typestubs given a Lua source directory.
+From the top-level directory, use:
+```
+pz-lua-stubgen -i <input-directory> -o <output-directory>`
 ```
 
 On Linux, use `./pz-lua-stubgen` instead.
 
-For information about other commands or the other available options, use `pz-lua-stubgen --help`.
+When building stubs for Umbrella, some additional flags that should probably be included:
+- `-k`, to include a stub for Kahlua functions.
+- `-r <stub-data-directory>`, to include [Rosetta](https://github.com/asledgehammer/PZ-Rosetta-Schema) stub data.
+- `--helper-pattern ^umbrella\.`, to avoid emitting globals for umbrella helper classes.
+- `--no-ambiguity`, to avoid emitting analyzed union types.
+
+For information about other commands and the other available options, use `pz-lua-stubgen --help`.
