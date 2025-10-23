@@ -86,7 +86,7 @@ export abstract class BaseGenerator extends BaseCommandHandler {
         this.rosettaOnly = args.rosettaOnly ?? false
         this.heuristics = args.heuristics ?? false
 
-        if (args.excludeKnownDefs ?? !args.rosettaOnly) {
+        if (!args.includeLargeDefs) {
             DEFAULT_EXCLUDES.forEach((x) => this.excludeFields.add(x))
         }
 

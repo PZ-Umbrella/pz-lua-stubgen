@@ -15,13 +15,18 @@ export const annotateCommand = (yargs: Argv) => {
         })
         .option('alphabetize', {
             type: 'boolean',
+            hidden: true,
             default: true,
-            desc: 'Whether fields and functions should be alphabetically sorted',
+        })
+        .option('no-alphabetize', {
+            type: 'boolean',
+            defaultDescription: 'false',
+            desc: 'Skip alphabetical sorting of fields and functions',
         })
         .option('include-kahlua', {
             type: 'boolean',
             alias: 'k',
-            desc: 'Whether to generate the kahlua stub.',
+            desc: 'If given, an additional stub for Kahlua will be included',
         })
         .option('inject', {
             type: 'boolean',
@@ -65,7 +70,7 @@ export const annotateCommand = (yargs: Argv) => {
         })
         .option('helper-pattern', {
             type: 'string',
-            desc: 'Regular expression to use to determine whether a class or table should have no initializer table',
+            desc: 'Regular expression to use to determine whether a class or table should have no initializer',
         })
         .check((args: any) => {
             if (!args.inputDirectory && !args.rosettaOnly) {
@@ -171,10 +176,11 @@ const addExcludeOptions = (yargs: Argv) => {
             string: true,
             desc: 'Classes to include without fields',
         })
-        .option('exclude-known-defs', {
+        .option('include-large-defs', {
             type: 'boolean',
+            default: false,
             defaultDescription: 'true',
-            desc: 'Whether known definition classes should be included without fields',
+            desc: 'Include fields for known large definition classes',
         })
 }
 
@@ -264,7 +270,7 @@ const addSharedSuffix = (yargs: Argv) => {
             string: true,
             conflicts: ['all-subdirectories'],
             defaultDescription: '"shared client server"',
-            desc: 'The subdirectories to read',
+            desc: 'The subdirectories to read, in reading order',
         })
         .option('all-subdirectories', {
             type: 'boolean',

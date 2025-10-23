@@ -86,10 +86,13 @@ export interface BaseAnnotateArgs extends BaseArgs {
     excludeFields?: string[]
 
     /**
-     * Whether known large definition classes should have their fields excluded.
+     * Whether known large definition classes should include their fields.
      */
-    excludeKnownDefs?: boolean
+    includeLargeDefs?: boolean
 
+    /**
+     * Flag for whether heuristics should be applied.
+     */
     heuristics?: boolean
 }
 
