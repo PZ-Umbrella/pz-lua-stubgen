@@ -1,7 +1,7 @@
 import path from 'path'
-import { BaseAnnotator } from '../base'
+import { BaseGenerator } from '../common'
 import { AnnotateArgs, InitializerSettings } from './types'
-import { log } from '../logger'
+import { log } from '../helpers'
 
 import {
     AnalyzedClass,
@@ -25,33 +25,61 @@ import {
 import {
     convertRosettaFile,
     getExpressionString,
-    getFunctionPrefix,
-    getFunctionPrefixFromExpression,
+    getFunctionAnnotation,
+    getFunctionAnnotationFromExpression,
     getFunctionString,
     getFunctionStringFromParamNames,
     getInlineNotes,
     getRosettaTypeString,
     getTypeString,
     getValueString,
-    outputFile,
+    writeFile,
     time,
     writeNotes,
     writeTableFields,
 } from '../helpers'
 
-const PREFIX = '---@meta'
+/**
+ * Set of field scopes to avoid outputting incorrect field annotations.
+ */
 const SCOPES = new Set(['public', 'private', 'protected', 'package'])
 
 /**
  * Handles annotation of Lua files.
  */
-export class Annotator extends BaseAnnotator {
+export class Annotator extends BaseGenerator {
+    /**
+     * Flag for whether fields and functions should be alphabetized.
+     */
     protected alphabetize: boolean
+
+    /**
+     * Flag for whether the kahlua stub should be included in the output.
+     */
     protected includeKahlua: boolean
+
+    /**
+     * Flag for whether class fields should be 'strict'
+     * (i.e., an `[any] any` field should not be included).
+     */
     protected strictFields: boolean
+
+    /**
+     * Flag for whether analyzed union types should be written.
+     * If this is `false`, union types will be written as `unknown`.
+     */
     protected allowAmbiguous: boolean
+
+    /**
+     * Pattern for helper types in Rosetta files.
+     * This is used to automatically exclude initializers, or mark as local as appropriate.
+     */
     protected helperPattern: RegExp | undefined
 
+    /**
+     * Creates a new annotator.
+     * @param args Command-line arguments for annotations.
+     */
     constructor(args: AnnotateArgs) {
         super(args)
 
@@ -65,39 +93,9 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
-    generateStub(mod: AnalyzedModule) {
-        const out = [(mod.prefix ?? PREFIX) + '\n']
-
-        const rosettaFile = this.rosetta.files[mod.id]
-        if (rosettaFile?.tags.has('StubGen_Hidden')) {
-            return out[0]
-        }
-
-        this.writeAliases(out, rosettaFile)
-
-        if (this.writeFields(mod, out, rosettaFile)) {
-            out.push('\n')
-        }
-
-        if (this.writeTables(mod, out, rosettaFile)) {
-            out.push('\n')
-        }
-
-        if (this.writeClasses(mod, out, rosettaFile)) {
-            out.push('\n')
-        }
-
-        if (this.writeGlobalFunctions(mod, out, rosettaFile)) {
-            out.push('\n')
-        }
-
-        this.writeReturns(mod, out)
-
-        return out.join('').trimEnd() + '\n'
-    }
-
     /**
      * Runs typestub generation.
+     * @returns The list of analyzed modules.
      */
     async run() {
         await this.loadRosetta()
@@ -121,19 +119,26 @@ export class Annotator extends BaseAnnotator {
                 }
 
                 try {
-                    await outputFile(outFile, typestub)
+                    await writeFile(outFile, typestub)
                 } catch (e) {
                     log.error(`Failed to write file '${outFile}': ${e}`)
                 }
             }
         })
 
-        const resolvedOutDir = path.resolve(outDir)
-        log.info(`Generated stubs at '${resolvedOutDir}'`)
-
+        log.info(`Generated stubs at '${path.resolve(outDir)}'`)
         return modules
     }
 
+    /**
+     * Matches a function from Rosetta against its corresponding analyzed function.
+     * Logs warning messages for mismatches.
+     *
+     * @param rosettaFunc The function from Rosetta files.
+     * @param name The name of the function.
+     * @param func The analyzed function.
+     * @param isMethod Flag for whether the function is a method.
+     */
     protected checkRosettaFunction(
         rosettaFunc: RosettaFunction | RosettaConstructor,
         name: string | undefined,
@@ -166,8 +171,50 @@ export class Annotator extends BaseAnnotator {
         )
     }
 
+    /**
+     * Generates a typestub for a single module.
+     * @param mod The analyzed module to write a stub for.
+     * @returns A string containing the file content of the generated stub.
+     */
+    protected generateStub(mod: AnalyzedModule) {
+        const out = [(mod.prefix ?? '---@meta') + '\n']
+
+        const rosettaFile = this.rosetta.files[mod.id]
+        if (rosettaFile?.tags.has('StubGen_Hidden')) {
+            return out[0]
+        }
+
+        this.writeRosettaAliases(out, rosettaFile)
+
+        if (this.writeFields(mod, out, rosettaFile)) {
+            out.push('\n')
+        }
+
+        if (this.writeTables(mod, out, rosettaFile)) {
+            out.push('\n')
+        }
+
+        if (this.writeClasses(mod, out, rosettaFile)) {
+            out.push('\n')
+        }
+
+        if (this.writeGlobalFunctions(mod, out, rosettaFile)) {
+            out.push('\n')
+        }
+
+        this.writeReturns(mod, out)
+
+        return out.join('').trimEnd() + '\n'
+    }
+
+    /**
+     * Gets an analyzed module representing the Kahlua definitions.
+     */
     protected async getKahluaModule(): Promise<AnalyzedModule | undefined> {
-        const kahluaDataPath = path.join(__dirname, '../../__kahlua.yml')
+        const kahluaDataPath = path.resolve(
+            path.join(__dirname, '../../__kahlua.yml'),
+        )
+
         const file = await this.rosetta.loadYamlFile(kahluaDataPath)
         if (!file) {
             log.error(`Failed to load kahlua data from ${kahluaDataPath}`)
@@ -193,6 +240,11 @@ export class Annotator extends BaseAnnotator {
         return mod
     }
 
+    /**
+     * Converts a name to a safe identifier by replacing `.` with `_`.
+     * @param name The input identifier name.
+     * @param dunder Flag for whether the name should be prefixed with a double underscore.
+     */
     protected getSafeIdentifier(name: string, dunder = false) {
         name = name.replaceAll('.', '_')
         if (!dunder) {
@@ -207,6 +259,12 @@ export class Annotator extends BaseAnnotator {
         return '__' + name
     }
 
+    /**
+     * Gets settings to use for a class or table initializer.
+     * @param element The table or class to determine settings for.
+     * @param rosettaElement The Rosetta table or class associated with the element.
+     * @param isTable Flag for whether the element is a table.
+     */
     protected getInitializerSettings(
         element: AnalyzedTable | AnalyzedClass,
         rosettaElement?: RosettaTable | RosettaClass,
@@ -253,6 +311,16 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
+    /**
+     * Applies transformations to analyzed modules.
+     * This includes:
+     * - Applying exclusions
+     * - Adding information indicated in Rosetta files
+     * - Adding the `Type` field implied by derived classes
+     * - Including the kahlua stub module
+     *
+     * @param modules The modules to apply transformations to.
+     */
     protected async transformModules(modules: AnalyzedModule[]) {
         await super.transformModules(modules)
 
@@ -266,44 +334,13 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
-    protected writeAliases(
-        out: string[],
-        rosettaFile: RosettaFile | undefined,
-    ): boolean {
-        if (!rosettaFile) {
-            return false
-        }
-
-        let writtenCount = 0
-        for (const alias of rosettaFile.aliases) {
-            writtenCount++
-
-            if (out.length > 1) {
-                out.push('\n')
-            }
-
-            out.push(`\n---@alias ${alias.name}`)
-
-            // simple alias
-            const types = alias.types
-            if (types.length === 1 && !types[0].notes) {
-                out.push(` ${types[0].type}`)
-                continue
-            }
-
-            for (const aliasType of types) {
-                out.push('\n---| ')
-                out.push(aliasType.type)
-
-                if (aliasType.notes) {
-                    out.push(` ${aliasType.notes}`)
-                }
-            }
-        }
-
-        return writtenCount > 0
-    }
-
+    /**
+     * Writes class annotations included in a module.
+     * @param mod The module to write classes from.
+     * @param out The output string array.
+     * @param rosettaFile The Rosetta file associated with the module.
+     * @returns Flag for whether anything was written.
+     */
     protected writeClasses(
         mod: AnalyzedModule,
         out: string[],
@@ -444,6 +481,13 @@ export class Annotator extends BaseAnnotator {
         return writtenCount > 0
     }
 
+    /**
+     * Writes class field annotations.
+     * @param cls The class to write fields for.
+     * @param writtenFields A set of already written field names, to avoid duplicates.
+     * @param out The output string array.
+     * @param rosettaClass The Rosetta class associated with the analyzed class.
+     */
     protected writeClassFields(
         cls: AnalyzedClass,
         writtenFields: Set<string>,
@@ -454,7 +498,6 @@ export class Annotator extends BaseAnnotator {
             ? [...cls.fields].sort((a, b) => a.name.localeCompare(b.name))
             : cls.fields
 
-        // fields
         for (const field of sortedFields) {
             const rosettaField = rosettaClass?.fields?.[field.name]
 
@@ -496,6 +539,14 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
+    /**
+     * Writes class functions, including annotations.
+     * @param name The class identifier name.
+     * @param functions A list of functions to write.
+     * @param indexer The indexer to use for the functions.
+     * @param out The output string array.
+     * @param rosettaClass The Rosetta class associated with the analyzed class.
+     */
     protected writeClassFunctions(
         name: string,
         functions: AnalyzedFunction[],
@@ -525,179 +576,14 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
-    protected writeFunction(
-        func: AnalyzedFunction,
-        name: string,
-        isMethod: boolean,
-        out: string[],
-        rosettaFunc: RosettaFunction | RosettaConstructor | undefined,
-    ): boolean {
-        const tags = (rosettaFunc as RosettaFunction)?.tags
-        if (tags?.includes('StubGen_Hidden')) {
-            return false
-        }
-
-        if (out.length > 1) {
-            out.push('\n')
-        }
-
-        if (rosettaFunc) {
-            this.checkRosettaFunction(rosettaFunc, name, func, isMethod)
-            this.writeRosettaFunction(rosettaFunc, name, func, isMethod, out)
-            return true
-        }
-
-        const prefix = getFunctionPrefix(
-            func.parameters,
-            func.returnTypes,
-            this.allowAmbiguous,
-        )
-
-        if (prefix) {
-            out.push(prefix)
-        }
-
-        out.push('\n')
-        out.push(getFunctionString(name, func.parameters))
-        return true
-    }
-
-    protected writeGlobalFunctions(
-        mod: AnalyzedModule,
-        out: string[],
-        rosettaFile: RosettaFile | undefined,
-    ): boolean {
-        const initialLen = out.length
-        for (const func of mod.functions) {
-            const rosettaFunc = rosettaFile?.functions[func.name]
-            this.writeFunction(func, func.name, false, out, rosettaFunc)
-        }
-
-        return out.length !== initialLen
-    }
-
-    protected writeOverload(overload: AnalyzedFunction, out: string[]) {
-        out.push('\n---@overload fun(')
-
-        const params: string[] = []
-        for (const param of overload.parameters) {
-            params.push(`${param.name}: ${getTypeString(param.types)}`)
-        }
-
-        out.push(params.join(', '))
-        out.push(')')
-
-        const returns: string[] = []
-        for (const ret of overload.returnTypes) {
-            returns.push(getTypeString(ret))
-        }
-
-        if (returns.length > 0) {
-            out.push(': ')
-            out.push(returns.join(', '))
-        }
-    }
-
-    protected writeRosettaOperators(
-        operators: RosettaOperator[] | undefined,
-        out: string[],
-    ): boolean {
-        if (operators === undefined) {
-            return false
-        }
-
-        const initialLen = out.length
-        for (const op of operators) {
-            if (!op.operation || !op.return) {
-                continue
-            }
-
-            if (op.tags?.includes('StubGen_Hidden')) {
-                continue
-            }
-
-            out.push(`\n---@operator ${op.operation}`)
-            if (op.parameter) {
-                out.push(`(${op.parameter})`)
-            }
-
-            out.push(`: ${op.return}`)
-        }
-
-        return out.length !== initialLen
-    }
-
-    protected writeRosettaOverloads(
-        overloads: RosettaOverload[] | undefined,
-        out: string[],
-    ): boolean {
-        if (overloads === undefined) {
-            return false
-        }
-
-        for (const overload of overloads) {
-            out.push('\n---@overload fun(')
-
-            const params: string[] = []
-            for (const param of overload.parameters ?? []) {
-                params.push(`${param.name}: ${param.type}`)
-            }
-
-            out.push(params.join(', '))
-            out.push(')')
-
-            const returns: string[] = []
-            for (const ret of overload.return ?? []) {
-                if (!ret.type) {
-                    continue
-                }
-
-                returns.push(ret.type)
-            }
-
-            if (returns.length > 0) {
-                out.push(': ')
-                out.push(returns.join(', '))
-            }
-        }
-
-        return true
-    }
-
-    protected writeReturns(mod: AnalyzedModule, out: string[]): boolean {
-        if (mod.returns.length === 0) {
-            return false
-        }
-
-        const locals: string[] = []
-        const returns: string[] = []
-        for (let i = 0; i < mod.returns.length; i++) {
-            const ret = mod.returns[i]
-
-            if (!ret.expression) {
-                const typeString = getTypeString(ret.types, this.allowAmbiguous)
-
-                locals.push(`\nlocal __RETURN${i}__ ---@type ${typeString}`)
-                returns.push(`__RETURN${i}__`)
-            } else {
-                returns.push(
-                    getExpressionString(ret.expression, this.allowAmbiguous),
-                )
-            }
-        }
-
-        if (returns.length === 0) {
-            return false
-        }
-
-        locals.forEach((x) => out.push(x))
-
-        out.push('\nreturn ')
-        out.push(returns.join(', '))
-
-        return true
-    }
-
+    /**
+     * Writes a global or table field assignment.
+     * @param field The field to write an annotation for.
+     * @param rosettaField The Rosetta field associated with the analyzed field.
+     * @param out The output string array.
+     * @param baseName The name of the table to write the field for, if writing a table field.
+     * @param writtenFields A set of already written fields.
+     */
     protected writeFieldAssignment(
         field: AnalyzedField,
         rosettaField: RosettaField | undefined,
@@ -709,13 +595,11 @@ export class Annotator extends BaseAnnotator {
             return
         }
 
-        if (writtenFields) {
-            if (writtenFields.has(field.name)) {
-                return
-            }
-
-            writtenFields.add(field.name)
+        if (writtenFields?.has(field.name)) {
+            return
         }
+
+        writtenFields?.add(field.name)
 
         if (rosettaField?.notes) {
             if (baseName) {
@@ -735,14 +619,14 @@ export class Annotator extends BaseAnnotator {
 
             hasRosettaType = true
         } else if (field.expression) {
-            const prefix = getFunctionPrefixFromExpression(
+            const annotation = getFunctionAnnotationFromExpression(
                 field.expression,
                 this.allowAmbiguous,
             )
 
-            if (prefix) {
+            if (annotation) {
                 out.push('\n')
-                out.push(prefix)
+                out.push(annotation)
             }
         } else {
             typeString = getTypeString(field.types, this.allowAmbiguous)
@@ -774,15 +658,18 @@ export class Annotator extends BaseAnnotator {
         }
     }
 
+    /**
+     * Writes fields (global variables) from a module.
+     * @param mod The module to write fields from.
+     * @param out The output string array.
+     * @param rosettaFile The Rosetta file associated with the module.
+     * @returns Flag for whether anything was written.
+     */
     protected writeFields(
         mod: AnalyzedModule,
         out: string[],
         rosettaFile: RosettaFile | undefined,
     ): boolean {
-        if (mod.fields.length === 0) {
-            return false
-        }
-
         let count = 0
         for (const field of mod.fields) {
             const clsOrTable =
@@ -811,6 +698,189 @@ export class Annotator extends BaseAnnotator {
         return count > 0
     }
 
+    /**
+     * Writes a function, including annotations.
+     * @param func The function to write.
+     * @param name The function name.
+     * @param isMethod Flag for whether the function is a method.
+     * @param out The output string array.
+     * @param rosettaFunc The Rosetta function associated with the analyzed function.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeFunction(
+        func: AnalyzedFunction,
+        name: string,
+        isMethod: boolean,
+        out: string[],
+        rosettaFunc: RosettaFunction | RosettaConstructor | undefined,
+    ): boolean {
+        const tags = (rosettaFunc as RosettaFunction)?.tags
+        if (tags?.includes('StubGen_Hidden')) {
+            return false
+        }
+
+        if (out.length > 1) {
+            out.push('\n')
+        }
+
+        if (rosettaFunc) {
+            this.checkRosettaFunction(rosettaFunc, name, func, isMethod)
+            this.writeRosettaFunction(rosettaFunc, name, func, isMethod, out)
+            return true
+        }
+
+        const annotation = getFunctionAnnotation(
+            func.parameters,
+            func.returnTypes,
+            this.allowAmbiguous,
+        )
+
+        if (annotation) {
+            out.push(annotation)
+        }
+
+        out.push('\n')
+        out.push(getFunctionString(name, func.parameters))
+        return true
+    }
+
+    /**
+     * Writes a global function, including annotations.
+     * @param mod The module to write functions from.
+     * @param out The output string array.
+     * @param rosettaFile The Rosetta file associated with the module.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeGlobalFunctions(
+        mod: AnalyzedModule,
+        out: string[],
+        rosettaFile: RosettaFile | undefined,
+    ): boolean {
+        const initialLen = out.length
+        for (const func of mod.functions) {
+            const rosettaFunc = rosettaFile?.functions[func.name]
+            this.writeFunction(func, func.name, false, out, rosettaFunc)
+        }
+
+        return out.length !== initialLen
+    }
+
+    /**
+     * Writes an overload annotation.
+     * @param overload Details about the overload to write.
+     * @param out The output string array.
+     */
+    protected writeOverload(overload: AnalyzedFunction, out: string[]) {
+        out.push('\n---@overload fun(')
+
+        const params: string[] = []
+        for (const param of overload.parameters) {
+            const annotation = `${param.name}: ${getTypeString(param.types, this.allowAmbiguous)}`
+            params.push(annotation)
+        }
+
+        out.push(params.join(', '))
+        out.push(')')
+
+        const returns: string[] = []
+        for (const ret of overload.returnTypes) {
+            returns.push(getTypeString(ret, this.allowAmbiguous))
+        }
+
+        if (returns.length > 0) {
+            out.push(': ')
+            out.push(returns.join(', '))
+        }
+    }
+
+    /**
+     * Writes module return values.
+     * @param mod The module to write returns from.
+     * @param out The output string array.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeReturns(mod: AnalyzedModule, out: string[]): boolean {
+        const locals: string[] = []
+        const returns: string[] = []
+        for (let i = 0; i < mod.returns.length; i++) {
+            const ret = mod.returns[i]
+
+            if (!ret.expression) {
+                const typeString = getTypeString(ret.types, this.allowAmbiguous)
+
+                locals.push(`\nlocal __RETURN${i}__ ---@type ${typeString}`)
+                returns.push(`__RETURN${i}__`)
+            } else {
+                returns.push(
+                    getExpressionString(ret.expression, this.allowAmbiguous),
+                )
+            }
+        }
+
+        if (returns.length === 0) {
+            return false
+        }
+
+        locals.forEach((x) => out.push(x))
+
+        out.push('\nreturn ')
+        out.push(returns.join(', '))
+
+        return true
+    }
+
+    /**
+     * Writes type aliases included in a Rosetta file.
+     * @param out The output string array.
+     * @param rosettaFile The rosetta file to read aliases from.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeRosettaAliases(
+        out: string[],
+        rosettaFile: RosettaFile | undefined,
+    ): boolean {
+        if (!rosettaFile) {
+            return false
+        }
+
+        let writtenCount = 0
+        for (const alias of rosettaFile.aliases) {
+            writtenCount++
+
+            if (out.length > 1) {
+                out.push('\n')
+            }
+
+            out.push(`\n---@alias ${alias.name}`)
+
+            // simple alias
+            const types = alias.types
+            if (types.length === 1 && !types[0].notes) {
+                out.push(` ${types[0].type}`)
+                continue
+            }
+
+            for (const aliasType of types) {
+                out.push('\n---| ')
+                out.push(aliasType.type)
+
+                if (aliasType.notes) {
+                    out.push(` ${aliasType.notes}`)
+                }
+            }
+        }
+
+        return writtenCount > 0
+    }
+
+    /**
+     * Writes a function and its annotations from a Rosetta file.
+     * @param rosettaFunc The function documented in a Rosetta file.
+     * @param name The name of the function.
+     * @param func The corresponding analyzed function.
+     * @param isMethod Flag for whether the function is a method.
+     * @param out The output string array.
+     */
     protected writeRosettaFunction(
         rosettaFunc: RosettaFunction | RosettaConstructor,
         name: string,
@@ -827,12 +897,13 @@ export class Annotator extends BaseAnnotator {
         let params = rosettaFunc.parameters ?? []
         for (let i = 0; i < params.length; i++) {
             const param = params[i]
-            if (
+            const isEmpty =
                 !param.type &&
                 !param.optional &&
                 !param.nullable &&
                 !param.notes
-            ) {
+
+            if (isEmpty) {
                 continue
             }
 
@@ -885,6 +956,7 @@ export class Annotator extends BaseAnnotator {
             out,
         )
 
+        // don't include documented self param in the param list for methods
         if (isMethod) {
             params = params.filter((x) => x.name !== 'self')
         }
@@ -898,6 +970,89 @@ export class Annotator extends BaseAnnotator {
         )
     }
 
+    /**
+     * Writes operator annotations from a Rosetta file.
+     * @param operators The operators documented in a Rosetta file.
+     * @param out The output string array.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeRosettaOperators(
+        operators: RosettaOperator[] | undefined,
+        out: string[],
+    ): boolean {
+        if (operators === undefined) {
+            return false
+        }
+
+        const initialLen = out.length
+        for (const op of operators) {
+            if (!op.operation || !op.return) {
+                continue
+            }
+
+            if (op.tags?.includes('StubGen_Hidden')) {
+                continue
+            }
+
+            out.push(`\n---@operator ${op.operation}`)
+            if (op.parameter) {
+                out.push(`(${op.parameter})`)
+            }
+
+            out.push(`: ${op.return}`)
+        }
+
+        return out.length !== initialLen
+    }
+
+    /**
+     * Writes overload annotations from a Rosetta file.
+     * @param operators The overloads documented in a Rosetta file.
+     * @param out The output string array.
+     * @returns Flag for whether anything was written.
+     */
+    protected writeRosettaOverloads(
+        overloads: RosettaOverload[] | undefined,
+        out: string[],
+    ): boolean {
+        if (overloads === undefined) {
+            return false
+        }
+
+        for (const overload of overloads) {
+            out.push('\n---@overload fun(')
+
+            const params: string[] = []
+            for (const param of overload.parameters ?? []) {
+                params.push(`${param.name}: ${param.type}`)
+            }
+
+            out.push(params.join(', '))
+            out.push(')')
+
+            const returns: string[] = []
+            for (const ret of overload.return ?? []) {
+                if (ret.type) {
+                    returns.push(ret.type)
+                }
+            }
+
+            if (returns.length > 0) {
+                out.push(': ')
+                out.push(returns.join(', '))
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * Writes tables from a module.
+     * @param mod The module to write tables from.
+     * @param out The output string array.
+     * @param rosettaFile The Rosetta file associated with the analyzed module.
+     * @returns Flag for whether anything was written.
+     */
     protected writeTables(
         mod: AnalyzedModule,
         out: string[],

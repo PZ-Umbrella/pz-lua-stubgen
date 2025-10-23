@@ -1,24 +1,9 @@
-import { BaseReportArgs } from '../base/types'
+import { BaseReportArgs } from '../common'
 
 /**
  * Arguments for dependency resolution.
  */
-export interface ResolveArgs extends BaseReportArgs {}
-
-/**
- * Dependencies on other files.
- */
-export interface LuaDependencies {
-    /**
-     * Lua file identifiers that indicate dependencies that were called with `require`.
-     */
-    explicit: string[]
-
-    /**
-     * Lua file identifiers that indicate dependencies based on global reads and writes.
-     */
-    implicit: string[]
-}
+export type ResolveArgs = BaseReportArgs
 
 /**
  * Information about a Lua file's explicit and implicit dependencies.
@@ -43,7 +28,7 @@ export interface LuaDependencyInfo {
 /**
  * Mappings of file identifiers to dependency information.
  */
-export interface LuaDependencyInfoMap {
+export interface LuaDependencyInfoMaps {
     /**
      * Maps file identifiers to a set of globals that the file reads.
      */

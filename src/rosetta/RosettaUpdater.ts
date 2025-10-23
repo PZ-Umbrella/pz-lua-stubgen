@@ -1,8 +1,7 @@
 import fs from 'fs'
 import path from 'path'
-import { log } from '../logger'
+import { log } from '../helpers'
 import { RosettaGenerator } from './RosettaGenerator'
-import { AnalyzedField, AnalyzedFunction, AnalyzedModule } from '../analysis'
 
 import {
     convertAnalyzedParameter,
@@ -10,7 +9,13 @@ import {
     time,
 } from '../helpers'
 
-import {
+import type {
+    AnalyzedField,
+    AnalyzedFunction,
+    AnalyzedModule,
+} from '../analysis'
+
+import type {
     RosettaClass,
     RosettaConstructor,
     RosettaField,
@@ -20,11 +25,29 @@ import {
     RosettaUpdateArgs,
 } from './types'
 
+/**
+ * Handles updating Rosetta data files.
+ */
 export class RosettaUpdater extends RosettaGenerator {
+    /**
+     * The directory to use for Rosetta files.
+     */
     protected rosettaDir: string
+
+    /**
+     * Flag for whether unknown files should be deleted.
+     */
     protected deleteUnknown: boolean
+
+    /**
+     * A set of file identifiers to treat as extra and not update.
+     */
     protected extraFiles: Set<string>
 
+    /**
+     * Creates a new updater.
+     * @param args Arguments for updating.
+     */
     constructor(args: RosettaUpdateArgs) {
         const rosettaDir = args.rosetta ?? args.outputDirectory
         delete args.rosetta
@@ -36,7 +59,11 @@ export class RosettaUpdater extends RosettaGenerator {
         this.extraFiles = new Set(args.extraFiles)
     }
 
-    async run() {
+    /**
+     * Runs Rosetta generation.
+     * @returns A list of analyzed modules.
+     */
+    async run(): Promise<AnalyzedModule[]> {
         const modules = await this.getModules(true)
 
         let isUpdate = true
@@ -59,10 +86,23 @@ export class RosettaUpdater extends RosettaGenerator {
         return modules
     }
 
-    protected shouldSkip(name: string, tags?: string[]) {
-        return tags?.includes('StubGen_Extra') || this.skipPattern?.test(name)
+    /**
+     * Determines whether a module should be skipped.
+     * @param name The module identifier.
+     * @param tags Tags included in a Rosetta file.
+     */
+    protected shouldSkip(name: string, tags?: string[]): boolean {
+        return (
+            tags?.includes('StubGen_Extra') ||
+            this.skipPattern?.test(name) ||
+            false
+        )
     }
 
+    /**
+     * Updates Rosetta data for the given modules.
+     * @param modules The modules to update.
+     */
     protected async update(modules: AnalyzedModule[]) {
         for (const mod of modules) {
             if (this.extraFiles.has(mod.id)) {
@@ -127,6 +167,11 @@ export class RosettaUpdater extends RosettaGenerator {
         await this.transformModules(modules)
     }
 
+    /**
+     * Updates classes in a Rosetta file.
+     * @param mod The module to update.
+     * @param file The associated Rosetta file.
+     */
     protected updateClasses(mod: AnalyzedModule, file: RosettaFile) {
         const clsMap = new Map(mod.classes.map((x) => [x.name, x]))
 
@@ -191,6 +236,12 @@ export class RosettaUpdater extends RosettaGenerator {
         }
     }
 
+    /**
+     * Updates constructors for a Rosetta class.
+     * @param moduleId A module file identifier.
+     * @param constructors The constructor list.
+     * @param rosettaCls The Rosetta class.
+     */
     protected updateConstructors(
         moduleId: string,
         constructors: AnalyzedFunction[],
@@ -244,6 +295,14 @@ export class RosettaUpdater extends RosettaGenerator {
         )
     }
 
+    /**
+     * Updates module or class fields.
+     * @param moduleId A module file identifier.
+     * @param fields The analyzed fields.
+     * @param rosettaFields The Rosetta fields.
+     * @param parentName The name of the containing class, if these are class fields.
+     * @param updateDefault Flag for whether the field's default value should be updated.
+     */
     protected updateFields(
         moduleId: string,
         fields: AnalyzedField[],
@@ -306,6 +365,14 @@ export class RosettaUpdater extends RosettaGenerator {
         }
     }
 
+    /**
+     * Updates functions for a class or module.
+     * @param moduleId A module file identifier.
+     * @param type The type of the functions.
+     * @param funcs The analyzed functions.
+     * @param rosettaFuncs The Rosetta functions.
+     * @param parentName The name of the containing class, if these are class functions.
+     */
     protected updateFunctions(
         moduleId: string,
         type: 'method' | 'function',
@@ -360,6 +427,14 @@ export class RosettaUpdater extends RosettaGenerator {
         }
     }
 
+    /**
+     * Updates parameters for a function.
+     * @param moduleId A module file identifier.
+     * @param funcName The name of the containing function.
+     * @param func The analyzed function to update parameters on.
+     * @param rosettaFunc The Rosetta function.
+     * @param isMethod Flag for whether the function is a method.
+     */
     protected updateParameters(
         moduleId: string,
         funcName: string,
@@ -430,6 +505,11 @@ export class RosettaUpdater extends RosettaGenerator {
         }
     }
 
+    /**
+     * Updates module tables.
+     * @param mod The module to update tables for.
+     * @param file The Rosetta file.
+     */
     protected updateTables(mod: AnalyzedModule, file: RosettaFile) {
         const tableMap = new Map(mod.tables.map((x) => [x.name, x]))
 

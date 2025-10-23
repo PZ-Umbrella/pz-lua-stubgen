@@ -1,6 +1,13 @@
-import { LuaExpression } from '../../analysis'
 import { isLiteralTable } from './is-literal-table'
+import type { LuaExpression } from '../../analysis'
 
+/**
+ * Returns whether the expression contains a literal table.
+ * This descends child expressions to determine if a literal
+ * table exists anywhere.
+ *
+ * @param expr The expression to check.
+ */
 export const containsLiteralTable = (expr: LuaExpression): boolean => {
     switch (expr.type) {
         case 'reference':

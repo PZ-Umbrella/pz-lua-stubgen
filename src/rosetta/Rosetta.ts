@@ -1,40 +1,58 @@
 import fs from 'fs'
 import path from 'path'
 import YAML from 'yaml'
-import {
+
+import type {
     RosettaAlias,
     RosettaAliasType,
     RosettaArgs,
     RosettaClass,
+    RosettaDataReader,
     RosettaField,
     RosettaFile,
     RosettaFunction,
     RosettaTable,
 } from './types'
+
 import {
     arrayToRecord,
     expect,
     expectField,
     getFileIdentifier,
+    log,
     readFileContents,
     time,
 } from '../helpers'
-import { log } from '../logger'
 
-type DataReader = (text: string) => any
-
+/**
+ * Handles reading Rosetta data files.
+ */
 export class Rosetta {
+    /**
+     * Record associating file identifiers to Rosetta files.
+     */
     readonly files: Record<string, RosettaFile>
 
+    /**
+     * Input directory to read Rosetta files from.
+     */
     protected inputDirectory: string
-    protected loaded: boolean = false
 
+    /**
+     * Creates a new Rosetta helper.
+     * @param args Arguments for reading Rosetta files.
+     */
     constructor(args: RosettaArgs) {
         this.inputDirectory = args.inputDirectory
 
         this.files = {}
     }
 
+    /**
+     * Loads Rosetta files from a directory and logs the result.
+     * @param dir The directory to load files from. Defaults to the input directory.
+     * @returns Flag for whether Rosetta data was found.
+     */
     async load(dir?: string): Promise<boolean> {
         const targetDir = dir ?? this.inputDirectory
         return time(
@@ -60,10 +78,21 @@ export class Rosetta {
         )
     }
 
+    /**
+     * Loads Rosetta JSON files from a directory.
+     * @param dir The directory to load files from. Defaults to the input directory.
+     * @returns Flag for whether Rosetta data was found.
+     */
     async loadJSON(dir?: string): Promise<boolean> {
         return await this.loadFiles('json', dir)
     }
 
+    /**
+     * Loads a single Rosetta JSON file.
+     * @param filePath The path to the JSON file.
+     * @param basePath The base path. Defaults to the parent directory of `filePath`.
+     * @returns The loaded Rosetta file.
+     */
     async loadJsonFile(
         filePath: string,
         basePath?: string,
@@ -76,10 +105,21 @@ export class Rosetta {
         )
     }
 
+    /**
+     * Loads Rosetta YAML files from a directory.
+     * @param dir The directory to load files from. Defaults to the input directory.
+     * @returns Flag for whether Rosetta data was found.
+     */
     async loadYAML(dir?: string): Promise<boolean> {
         return await this.loadFiles('yml', dir)
     }
 
+    /**
+     * Loads a single Rosetta YAML file.
+     * @param filePath The path to the YAML file.
+     * @param basePath The base path. Defaults to the parent directory of `filePath`.
+     * @returns The loaded Rosetta file.
+     */
     async loadYamlFile(
         filePath: string,
         basePath?: string,
@@ -92,7 +132,104 @@ export class Rosetta {
         )
     }
 
-    readData(data: any, id: string, filename: string): RosettaFile | undefined {
+    /**
+     * Loads a single Rosetta data file.
+     * @param filePath The path to the Rosetta data file.
+     * @param basePath The base path.
+     * @param reader The function to use to read the data into an object.
+     * @param extensions Expected file extensions.
+     * @returns The loaded Rosetta file.
+     */
+    protected async loadFile(
+        filePath: string,
+        basePath: string,
+        reader: RosettaDataReader,
+        extensions: string[],
+    ): Promise<RosettaFile | undefined> {
+        try {
+            const content = await readFileContents(filePath)
+            const data = reader(content)
+            const id = getFileIdentifier(filePath, basePath, extensions)
+            return this.readData(data, id, path.resolve(filePath))
+        } catch (e) {
+            log.error(`Failed to read Rosetta file '${filePath}': ${e}`)
+        }
+    }
+
+    /**
+     * Loads Rosetta files from a directory.
+     * @param type The file type to load.
+     * @param dir The directory to load files from.
+     * @returns Flag for whether Rosetta data was found.
+     */
+    protected async loadFiles(type: string, dir?: string): Promise<boolean> {
+        const basePath = `${dir ?? this.inputDirectory}/${type}`
+        if (!fs.existsSync(basePath) || !fs.statSync(basePath).isDirectory) {
+            return false
+        }
+
+        let reader: RosettaDataReader
+        let extensions: string[] = []
+        switch (type) {
+            case 'json':
+                extensions = ['.json']
+                reader = JSON.parse
+                break
+
+            case 'yml':
+                extensions = ['.yml', '.yaml']
+                reader = YAML.parse
+                break
+
+            default:
+                return false
+        }
+
+        const stack = [basePath]
+        while (stack.length > 0) {
+            const dirPath = stack.pop()!
+
+            try {
+                const dir = await fs.promises.opendir(dirPath)
+
+                for await (const fileOrDir of dir) {
+                    const childPath = path.join(dirPath, fileOrDir.name)
+
+                    if (fileOrDir.isDirectory()) {
+                        stack.push(childPath)
+                        continue
+                    }
+
+                    if (!fileOrDir.isFile()) {
+                        continue
+                    }
+
+                    const extname = path.extname(childPath)
+                    if (!extensions.includes(extname)) {
+                        continue
+                    }
+
+                    await this.loadFile(childPath, basePath, reader, extensions)
+                }
+            } catch (e) {
+                log.error(`Failed to read Rosetta directory '${dirPath}': ${e}`)
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * Validates and converts data from a Rosetta file.
+     * @param data The data read from a Rosetta file.
+     * @param id The file identifier.
+     * @param filename The filename.
+     */
+    protected readData(
+        data: any,
+        id: string,
+        filename: string,
+    ): RosettaFile | undefined {
         expect(data, 'object')
 
         expectField(data, 'version', 'string', false)
@@ -217,78 +354,5 @@ export class Rosetta {
 
         this.files[id] = file
         return file
-    }
-
-    protected async loadFile(
-        filePath: string,
-        basePath: string,
-        reader: DataReader,
-        extensions: string[],
-    ): Promise<RosettaFile | undefined> {
-        try {
-            const content = await readFileContents(filePath)
-            const data = reader(content)
-            const id = getFileIdentifier(filePath, basePath, extensions)
-            return this.readData(data, id, path.resolve(filePath))
-        } catch (e) {
-            log.error(`Failed to read Rosetta file '${filePath}': ${e}`)
-        }
-    }
-
-    protected async loadFiles(type: string, dir?: string): Promise<boolean> {
-        const basePath = `${dir ?? this.inputDirectory}/${type}`
-        if (!fs.existsSync(basePath) || !fs.statSync(basePath).isDirectory) {
-            return false
-        }
-
-        let reader: DataReader
-        let extensions: string[] = []
-        switch (type) {
-            case 'json':
-                extensions = ['.json']
-                reader = JSON.parse
-                break
-
-            case 'yml':
-                extensions = ['.yml', '.yaml']
-                reader = YAML.parse
-                break
-
-            default:
-                return false
-        }
-
-        const stack = [basePath]
-        while (stack.length > 0) {
-            const dirPath = stack.pop()!
-
-            try {
-                const dir = await fs.promises.opendir(dirPath)
-
-                for await (const fileOrDir of dir) {
-                    const childPath = path.join(dirPath, fileOrDir.name)
-
-                    if (fileOrDir.isDirectory()) {
-                        stack.push(childPath)
-                        continue
-                    }
-
-                    if (!fileOrDir.isFile()) {
-                        continue
-                    }
-
-                    const extname = path.extname(childPath)
-                    if (!extensions.includes(extname)) {
-                        continue
-                    }
-
-                    await this.loadFile(childPath, basePath, reader, extensions)
-                }
-            } catch (e) {
-                log.error(`Failed to read Rosetta directory '${dirPath}': ${e}`)
-            }
-        }
-
-        return true
     }
 }

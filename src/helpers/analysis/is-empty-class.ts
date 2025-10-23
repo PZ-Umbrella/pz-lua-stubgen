@@ -1,7 +1,8 @@
-import { AnalyzedClass } from '../../analysis'
+import type { AnalyzedClass } from '../../analysis'
 
 /**
  * Checks whether an analyzed class has no associated information.
+ * @param cls The class to check.
  */
 export const isEmptyClass = (cls: AnalyzedClass): boolean => {
     return (

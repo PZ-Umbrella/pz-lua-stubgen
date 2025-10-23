@@ -1,8 +1,7 @@
 version: "1.1"
 languages:
   lua:
-    tags:
-      - StubGen_Definitions
+    tags: [StubGen_Definitions]
     tables:
       __classmetatables: {}
       string:
@@ -75,24 +74,29 @@ languages:
           - name: random
             parameters:
               - name: m
-                type: integer?
+                type: integer
+                nullable: true
               - name: n
-                type: integer?
+                type: integer
+                nullable: true
             return:
               - type: number
           - name: seed
             parameters:
               - name: value
-                type: unknown?
+                type: unknown
+                nullable: true
     functions:
       - name: serialize
         parameters:
           - name: value
             type: unknown
           - name: multiline
-            type: string?
+            type: string
+            nullable: true
           - name: indent
-            type: string?
+            type: string
+            nullable: true
         return:
           - type: string
       - name: deserialize
@@ -110,13 +114,17 @@ languages:
       - name: debugstacktrace
         parameters:
           - name: thread
-            type: thread?
+            type: thread
+            nullable: true
           - name: level
-            type: integer?
+            type: integer
+            nullable: true
           - name: maxLines
-            type: integer?
+            type: integer
+            nullable: true
           - name: maxLevel
-            type: integer?
+            type: integer
+            nullable: true
         return:
           - type: string
       - name: loadstream
@@ -126,14 +134,17 @@ languages:
           - name: chunkname
             type: string
         return:
-          - type: function?
-          - type: string?
+          - type: function
+            nullable: true
+          - type: string
+            nullable: true
       - name: bytecodeloader
         parameters:
           - name: loader
             type: string
         return:
-          - type: (string | function)?
+          - type: string | function
+            nullable: true
       - name: newrandom
         return:
           - type: Random

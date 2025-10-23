@@ -1,3 +1,8 @@
+/**
+ * Returns a rewritten function expression with no body.
+ * @param name The function name.
+ * @param parameters Function parameter names.
+ */
 export const getFunctionStringFromParamNames = (
     name: string | undefined,
     parameters: string[],

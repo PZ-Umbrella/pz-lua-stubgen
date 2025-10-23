@@ -1,8 +1,8 @@
 import type ast from 'luaparse'
 import { getLiteralKey } from '../helpers'
-import { LuaScope } from '../scopes'
-import { AnalysisContext } from './AnalysisContext'
-import {
+import type { LuaScope } from '../common'
+import type { AnalysisContext } from './AnalysisContext'
+import type {
     AssignmentItem,
     FunctionDefinitionItem,
     FunctionInfo,
@@ -34,6 +34,10 @@ const UNKNOWN_NAMES = /^(?:target|(?:param|arg)\d+)$/
 export class TypeResolver {
     protected context: AnalysisContext
 
+    /**
+     * Creates a new type resolver.
+     * @param context The analysis context.
+     */
     constructor(context: AnalysisContext) {
         this.context = context
     }
@@ -46,85 +50,9 @@ export class TypeResolver {
     }
 
     /**
-     * Applies heuristics to the parameters of a function.
-     */
-    applyParamNameHeuristics(info: FunctionInfo) {
-        const checkNames = info.parameterNames.map((x) =>
-            x.startsWith('_') ? x.slice(1) : x,
-        )
-
-        let dxDyCount = 0
-        let posSizeCount = 0
-        let rgbaCount = 0
-
-        for (const name of checkNames) {
-            if (DX_DY_NAMES.has(name)) {
-                // both of dx, dy → assume number
-                dxDyCount++
-            } else if (POS_SIZE_NAMES.has(name)) {
-                // 2+ of {x, y, z, w, h, width, height} → assume number
-                posSizeCount++
-            } else if (RGBA_NAMES.has(name)) {
-                // 3+ of {r, g, b, a} → assume number
-                rgbaCount++
-            }
-        }
-
-        for (let i = 0; i < info.parameters.length; i++) {
-            const name = checkNames[i]
-            const assumeNum =
-                (posSizeCount >= 2 && POS_SIZE_NAMES.has(name)) ||
-                (rgbaCount >= 3 && RGBA_NAMES.has(name)) ||
-                (dxDyCount >= 2 && DX_DY_NAMES.has(name))
-
-            if (assumeNum) {
-                info.parameterTypes[i] ??= new Set()
-                info.parameterTypes[i].add('number')
-                continue
-            }
-
-            // isX → boolean
-            const third = name.slice(2, 3)
-            if (name.startsWith('is') && third.toUpperCase() === third) {
-                info.parameterTypes[i] ??= new Set()
-                info.parameterTypes[i].add('boolean')
-                continue
-            }
-
-            // avoid heuristics for doTitle
-            const upper = name.toUpperCase()
-            if (upper.startsWith('DO')) {
-                continue
-            }
-
-            // starts or ends with num → assume number
-            if (upper.startsWith('NUM') || upper.endsWith('NUM')) {
-                info.parameterTypes[i] ??= new Set()
-                info.parameterTypes[i].add('number')
-                continue
-            }
-
-            // ends with name, title, or str → assume string
-            if (
-                upper.endsWith('STR') ||
-                upper.endsWith('NAME') ||
-                upper.endsWith('TITLE')
-            ) {
-                info.parameterTypes[i] ??= new Set()
-                info.parameterTypes[i].add('string')
-                continue
-            }
-
-            // target, paramN, argN → unknown
-            if (UNKNOWN_NAMES.test(name)) {
-                info.parameterTypes[i] ??= new Set()
-                info.parameterTypes[i].add('unknown')
-            }
-        }
-    }
-
-    /**
      * Resolves the potential types of an expression.
+     * @param info The expression to resolve.
+     * @param seen Associates already encountered expressions to sets of types, to avoid cycles.
      */
     resolve(
         info: LuaExpressionInfo,
@@ -275,7 +203,9 @@ export class TypeResolver {
     }
 
     /**
-     * Adds an assignment to the list of definitions or fields.
+     * Resolves types for an assignment and adds the assignment as a definition.
+     * @param scope The current scope.
+     * @param item The assignment item, or a non-anonymous function definition.
      */
     resolveAssignment(
         scope: LuaScope,
@@ -313,11 +243,11 @@ export class TypeResolver {
                     }
                 }
 
-                this.addDefinition(scope, lhs.id, rhs, index)
+                this.addDef(scope, lhs.id, rhs, index)
                 break
 
             case 'index':
-                const indexBase = [...this.resolve({ expression: lhs.base })]
+                const indexBase = [...this.resolveExpression(lhs.base)]
 
                 if (indexBase.length !== 1) {
                     break
@@ -330,21 +260,24 @@ export class TypeResolver {
 
                 const key = getLiteralKey(resolved.literal, resolved.luaType)
 
-                this.addField(scope, indexBase[0], key, rhs, lhs, index)
+                this.addFieldDef(scope, indexBase[0], key, rhs, lhs, index)
                 break
 
             case 'member':
                 let isInstance = false
-                const memberBase = [
-                    ...this.resolve({ expression: lhs.base }),
-                ].filter((x) => {
-                    if (!x.startsWith('@self') && !x.startsWith('@instance')) {
-                        return true
-                    }
+                const memberBase = [...this.resolveExpression(lhs.base)].filter(
+                    (x) => {
+                        if (
+                            !x.startsWith('@self') &&
+                            !x.startsWith('@instance')
+                        ) {
+                            return true
+                        }
 
-                    isInstance = true
-                    return false
-                })
+                        isInstance = true
+                        return false
+                    },
+                )
 
                 // method definition on unknown global → unknown class for base
                 if (memberBase.length === 0) {
@@ -379,7 +312,7 @@ export class TypeResolver {
                 }
 
                 const memberKey = getLiteralKey(lhs.member)
-                this.addField(
+                this.addFieldDef(
                     scope,
                     memberBase[0],
                     memberKey,
@@ -395,6 +328,13 @@ export class TypeResolver {
         }
     }
 
+    /**
+     * Prepares parameters for a function.
+     * This adds implied classes from method definitions and applies heuristics for parameter types.
+     * @param scope The current scope.
+     * @param node The function declaration AST node.
+     * @param info Information about the function. This is populated with parameters from the node.
+     */
     resolveFunctionParams(
         scope: LuaScope,
         node: ast.FunctionDeclaration,
@@ -416,6 +356,7 @@ export class TypeResolver {
         }
 
         for (const param of node.parameters) {
+            // locals for params are created in AnalysisReader.processNewScope
             const paramId = scope.getLocalId(
                 param.type === 'Identifier' ? param.name : '...',
             )
@@ -432,142 +373,16 @@ export class TypeResolver {
         }
     }
 
-    resolveReturns(item: ReturnsItem | ResolvedScopeItem) {
-        if (item.returns === undefined) {
-            return
-        }
-
-        const funcInfo = this.context.getFunctionInfo(item.id)
-
-        // don't add returns to a class constructor
-        if (funcInfo.isConstructor) {
-            funcInfo.minReturns = Math.min(
-                funcInfo.minReturns ?? Number.MAX_VALUE,
-                item.returns.length,
-            )
-
-            return
-        }
-
-        let fullReturnCount = item.returns.length
-        for (let i = 0; i < item.returns.length; i++) {
-            funcInfo.returnTypes[i] ??= new Set()
-            funcInfo.returnExpressions[i] ??= new Set()
-
-            if (item.type === 'resolved') {
-                item.returns[i].types.forEach((x) =>
-                    funcInfo.returnTypes[i].add(x),
-                )
-
-                continue
-            }
-
-            const ret = item.returns[i]
-            const isTailCall =
-                i === item.returns.length - 1 &&
-                ret.type === 'operation' &&
-                ret.operator === 'call'
-
-            if (isTailCall) {
-                const funcReturns = this.resolveReturnTypes(ret)
-                if (funcReturns) {
-                    fullReturnCount += funcReturns.length - 1
-                    funcInfo.returnExpressions[i].add(ret)
-
-                    for (let j = 0; j < funcReturns.length; j++) {
-                        funcInfo.returnTypes[i + j] ??= new Set()
-
-                        this.remapBooleans(funcReturns[j]).forEach((x) =>
-                            funcInfo.returnTypes[i + j].add(x),
-                        )
-                    }
-
-                    continue
-                }
-            }
-
-            funcInfo.returnExpressions[i].add(ret)
-            this.remapBooleans(this.resolve({ expression: ret })).forEach((x) =>
-                funcInfo.returnTypes[i].add(x),
-            )
-        }
-
-        funcInfo.minReturns = Math.min(
-            funcInfo.minReturns ?? Number.MAX_VALUE,
-            fullReturnCount,
-        )
-
-        const min = funcInfo.minReturns
-        if (min === undefined) {
-            return
-        }
-
-        if (funcInfo.returnTypes.length <= min) {
-            return
-        }
-
-        // mark returns exceeding the minimum as nullable
-        for (let i = min; i < funcInfo.returnTypes.length; i++) {
-            funcInfo.returnTypes[i].add('nil')
-        }
-    }
-
-    /**
-     * Resolves the return types of a function operation.
-     */
-    resolveReturnTypes(
-        op: LuaOperation,
-        seen?: Map<LuaExpressionInfo, Set<string>>,
-    ): Set<string>[] | undefined {
-        const func = op.arguments[0]
-        if (!func) {
-            return
-        }
-
-        const types: Set<string>[] = []
-        const knownTypes = new Set<string>()
-        if (this.addKnownReturns(func, knownTypes)) {
-            types.push(knownTypes)
-            return types
-        }
-
-        const resolvedFuncTypes = this.resolve({ expression: func }, seen)
-        if (!resolvedFuncTypes || resolvedFuncTypes.size !== 1) {
-            return
-        }
-
-        const resolvedFunc = [...resolvedFuncTypes][0]
-        if (!resolvedFunc.startsWith('@function')) {
-            return
-        }
-
-        // handle constructors
-        const funcInfo = this.context.getFunctionInfo(resolvedFunc)
-        if (funcInfo.isConstructor) {
-            types.push(new Set())
-            types[0].add('@instance') // mark as an instance to correctly attribute fields
-            funcInfo.returnTypes[0]?.forEach((x) => types[0].add(x))
-            return types
-        }
-
-        for (let i = 0; i < funcInfo.returnTypes.length; i++) {
-            types.push(new Set(funcInfo.returnTypes[i]))
-        }
-
-        return types
-    }
-
     /**
      * Resolves the types of the analysis items for a module.
+     * @param scope The current scope.
      */
     resolveScope(scope: LuaScope): ResolvedScopeItem {
         // collect usage information
         for (const item of scope.items) {
-            if (item.type !== 'usage') {
-                continue
+            if (item.type === 'usage') {
+                this.addUsage(item)
             }
-
-            this.addUsage(item)
         }
 
         // resolve classes, functions, and returns
@@ -672,17 +487,20 @@ export class TypeResolver {
 
     /**
      * Modifies types based on a setmetatable call.
+     * @param scope The current scope.
+     * @param ident The first argument to the setmetatable call.
+     * @param meta The second argument to the setmetatable call.
      */
     resolveSetMetatable(
         scope: LuaScope,
-        lhs: LuaExpression,
+        ident: LuaExpression,
         meta: LuaExpression,
     ) {
-        if (lhs.type !== 'reference') {
+        if (ident.type !== 'reference') {
             return
         }
 
-        const name = scope.localIdToName(lhs.id)
+        const name = scope.localIdToName(ident.id)
         if (!name) {
             return
         }
@@ -695,7 +513,7 @@ export class TypeResolver {
                 return
             }
 
-            // { __index = X }
+            // { __index = Y }
             const field = fields[0]
             if (field.key.type !== 'string' || field.key.name !== '__index') {
                 return
@@ -705,7 +523,7 @@ export class TypeResolver {
         }
 
         // get metatable type
-        const metaTypes = [...this.resolve({ expression: meta })].filter(
+        const metaTypes = [...this.resolveExpression(meta)].filter(
             (x) => !x.startsWith('@self'),
         )
 
@@ -720,17 +538,17 @@ export class TypeResolver {
             return
         }
 
-        // get lhs types
-        const lhsTypes = [...this.resolve({ expression: lhs })].filter(
+        // get table types
+        const identTypes = [...this.resolveExpression(ident)].filter(
             (x) => x !== '@instance',
         )
 
-        if (lhsTypes.find((x) => !x.startsWith('@table'))) {
-            // non-table lhs → don't treat as instance
+        if (identTypes.find((x) => !x.startsWith('@table'))) {
+            // non-table → don't treat as instance
             return
         }
 
-        for (const resolvedLhs of lhsTypes) {
+        for (const resolvedLhs of identTypes) {
             const lhsInfo = this.context.getTableInfo(resolvedLhs)
             // don't copy class fields
             if (lhsInfo.className) {
@@ -757,7 +575,7 @@ export class TypeResolver {
             })
         }
 
-        // mark lhs as class instance
+        // mark table as class instance
         const newId = scope.addInstance(name)
         this.context.definitions.set(newId, [
             {
@@ -770,6 +588,11 @@ export class TypeResolver {
         ])
     }
 
+    /**
+     * Adds field definitions from a table's literal fields.
+     * @param scope The current scope.
+     * @param tableInfo The table to resolve literal fields within.
+     */
     resolveTableLiteralFields(scope: LuaScope, tableInfo: TableInfo) {
         const tableId = tableInfo.id
         const fields = tableInfo.literalFields
@@ -799,7 +622,7 @@ export class TypeResolver {
                 continue
             }
 
-            this.addField(
+            this.addFieldDef(
                 scope,
                 tableId,
                 literalKey,
@@ -813,110 +636,13 @@ export class TypeResolver {
     }
 
     /**
-     * Resolves an expression into a basic literal, if it can be determined
-     * to be resolvable to one.
+     * Adds an expression to the list of definitions for an identifier.
+     * @param scope The current scope.
+     * @param id The identifier or internal `@`-prefixed ID.
+     * @param expression The expression to add.
+     * @param index The index of the definition in a call assignment.
      */
-    resolveToLiteral(
-        expression: LuaExpression,
-        seen?: Map<LuaExpressionInfo, Set<string>>,
-    ): LuaLiteral | undefined {
-        const stack: LuaExpressionInfo[] = []
-
-        stack.push({ expression })
-
-        while (stack.length > 0) {
-            const info = stack.pop()!
-            const expr = info.expression
-
-            let key: string
-            let tableInfo: TableInfo
-            let fieldDefs: LuaExpressionInfo[] | undefined
-            switch (expr.type) {
-                case 'literal':
-                    if (
-                        expr.luaType !== 'table' &&
-                        expr.luaType !== 'function'
-                    ) {
-                        return expr
-                    }
-
-                    return
-
-                case 'reference':
-                    fieldDefs = this.context.getDefinitions(expr.id)
-                    if (fieldDefs.length === 1) {
-                        stack.push(fieldDefs[0])
-                    }
-
-                    break
-
-                case 'member':
-                    const memberBase = [
-                        ...this.resolve({ expression: expr.base }),
-                    ]
-
-                    if (memberBase.length !== 1) {
-                        break
-                    }
-
-                    tableInfo = this.context.getTableInfo(memberBase[0])
-                    key = getLiteralKey(expr.member)
-                    fieldDefs = tableInfo.definitions.get(key) ?? []
-
-                    if (fieldDefs.length === 1) {
-                        stack.push(fieldDefs[0])
-                    }
-
-                    break
-
-                case 'index':
-                    const indexBase = [
-                        ...this.resolve({ expression: expr.base }),
-                    ]
-
-                    if (indexBase.length !== 1) {
-                        break
-                    }
-
-                    const index = this.resolveToLiteral(expr.index, seen)
-
-                    if (!index || !index.literal) {
-                        break
-                    }
-
-                    tableInfo = this.context.getTableInfo(indexBase[0])
-                    key = getLiteralKey(index.literal, index.luaType)
-
-                    fieldDefs = tableInfo.definitions.get(key) ?? []
-
-                    if (fieldDefs.length === 1) {
-                        stack.push(fieldDefs[0])
-                    }
-
-                    break
-
-                case 'operation':
-                    const types = [...this.resolve({ expression: expr }, seen)]
-
-                    if (types.length !== 1) {
-                        break
-                    }
-
-                    // only resolve known booleans
-                    if (types[0] === 'true' || types[0] === 'false') {
-                        return {
-                            type: 'literal',
-                            luaType: 'boolean',
-                            literal: types[0],
-                        }
-                    }
-
-                    break
-            }
-        }
-    }
-
-    protected addDefinition(
+    protected addDef(
         scope: LuaScope,
         id: string,
         expression: LuaExpression,
@@ -936,7 +662,18 @@ export class TypeResolver {
         })
     }
 
-    protected addField(
+    /**
+     * Adds an expression to the list of definitions for a table field.
+     * @param scope The current scope.
+     * @param id The identifier or internal `@`-prefixed ID.
+     * @param field The name of the field.
+     * @param rhs The expression being assigned to the field.
+     * @param lhs The original left side expression for the assignment, if available.
+     * @param index The index of the definition in a call assignment.
+     * @param instance Flag for whether the field is being set on an instance of a class.
+     * @param fromLiteral Flag for whether the field comes from the table constructor literal.
+     */
+    protected addFieldDef(
         scope: LuaScope,
         id: string,
         field: string,
@@ -966,7 +703,7 @@ export class TypeResolver {
             )
         }
 
-        const types = this.resolve({ expression: rhs })
+        const types = this.resolveExpression(rhs)
         const tableId = types.size === 1 ? [...types][0] : undefined
         const fieldInfo = tableId?.startsWith('@table')
             ? this.context.getTableInfo(tableId)
@@ -1070,85 +807,15 @@ export class TypeResolver {
         containerInfo.definitions.set(targetName, fieldDefs)
     }
 
-    protected tryAddPartialItem(
-        scope: LuaScope,
-        item: AssignmentItem | RequireAssignmentItem | FunctionDefinitionItem,
-        lhs: LuaReference,
-        rhs: LuaExpression,
-    ): string | undefined {
-        // edge case: closure-based classes
-        if (scope.type === 'function') {
-            if (scope.localIdToName(lhs.id) !== scope.classSelfName) {
-                return
-            }
-
-            // self = {} | Base.new() → use the generated table
-            return scope.classTableId
-        }
-
-        // check module and module-level blocks, excluding functions
-        if (!scope.id.startsWith('@module')) {
-            return
-        }
-
-        // include requires as module fields
-        if (item.type === 'requireAssignment') {
-            scope.items.push({
-                type: 'partial',
-                requireInfo: {
-                    name: lhs.id,
-                    module: item.rhs.module,
-                },
-            })
-
-            return
-        }
-
-        // global function definition
-        if (item.type === 'functionDefinition') {
-            // ignore local functions
-            if (item.isLocal) {
-                return
-            }
-
-            scope.items.push({
-                type: 'partial',
-                functionInfo: {
-                    name: lhs.id,
-                    functionId: item.id,
-                },
-            })
-
-            return
-        }
-
-        // class definition
-        const id = this.classResolver.tryAddPartial(scope, lhs, rhs)
-        if (id) {
-            return typeof id === 'string' ? id : undefined
-        }
-
-        // global function assignment
-        const rhsTypes = [...this.resolve({ expression: item.rhs })]
-
-        if (rhsTypes.length !== 1) {
-            return
-        }
-
-        const rhsType = rhsTypes[0]
-        if (rhsType.startsWith('@function')) {
-            scope.items.push({
-                type: 'partial',
-                functionInfo: {
-                    name: lhs.id,
-                    functionId: rhsType,
-                },
-            })
-        }
-    }
-
     /**
      * Adds known return types based on function names.
+     *
+     * TODO: This should be replaced with using Rosetta files (java + kahlua stub) to populate
+     * default types for the environment, alongside definitions for the basic Lua environment.
+     *
+     * @param expr The expression to check. If it's not a reference, this is ignored.
+     * @param types Set of types to add potential types to.
+     * @returns Flag representing whether the function was known.
      */
     protected addKnownReturns(
         expr: LuaExpression,
@@ -1180,7 +847,9 @@ export class TypeResolver {
     }
 
     /**
-     * Adds information about the usage of an expression.
+     * Prepares information for type narrowing based on the usage of an expression.
+     * @param item The item containing information about how an expression was used.
+     *
      */
     protected addUsage(item: UsageItem) {
         let usageTypes = this.context.usageTypes.get(item.expression)
@@ -1237,7 +906,7 @@ export class TypeResolver {
         usageTypes.delete('string')
         usageTypes.delete('table')
 
-        const types = [...this.resolve({ expression: item.expression })]
+        const types = [...this.resolveExpression(item.expression)]
 
         const id = types[0]
         if (types.length !== 1 || !id.startsWith('@function')) {
@@ -1250,7 +919,7 @@ export class TypeResolver {
         // add passed arguments to inferred parameter types
         for (let i = 0; i < item.arguments.length; i++) {
             parameterTypes[i] ??= new Set()
-            this.resolve({ expression: item.arguments[i] }).forEach((x) =>
+            this.resolveExpression(item.arguments[i]).forEach((x) =>
                 parameterTypes[i].add(x),
             )
         }
@@ -1263,8 +932,100 @@ export class TypeResolver {
     }
 
     /**
+     * Applies heuristics to the parameters of a function based on their names.
+     *
+     * Currently, this includes the following heuristics:
+     * - If `dx` and `dy` are both present, assume both are numbers.
+     * - If at least 2 of `x`, `y`, `w`, `h`, `width`, and `height` are present, assume they are numbers.
+     * - If at least 3 of `r`, `g`, `b`, and `a` are present, assume they are numbers.
+     * - If a parameter name matches `isX`, assume it's a boolean.
+     * - If a parameter name starts or ends with `num` (and does not start with `do`), assume it's a number.
+     * - If a parameter name starts or ends with `title`, `name`, or `str` (and does not start with `do`), assume it's a string.
+     * - If a parameter name matches `target`, `paramN`, or `argN`, mark it as unknown.
+     *
+     * @param info Information about the function to apply heuristics to.
+     */
+    protected applyParamNameHeuristics(info: FunctionInfo) {
+        const checkNames = info.parameterNames.map((x) =>
+            x.startsWith('_') ? x.slice(1) : x,
+        )
+
+        let dxDyCount = 0
+        let posSizeCount = 0
+        let rgbaCount = 0
+
+        for (const name of checkNames) {
+            if (DX_DY_NAMES.has(name)) {
+                // both of dx, dy → assume number
+                dxDyCount++
+            } else if (POS_SIZE_NAMES.has(name)) {
+                // 2+ of {x, y, z, w, h, width, height} → assume number
+                posSizeCount++
+            } else if (RGBA_NAMES.has(name)) {
+                // 3+ of {r, g, b, a} → assume number
+                rgbaCount++
+            }
+        }
+
+        for (let i = 0; i < info.parameters.length; i++) {
+            const name = checkNames[i]
+            const assumeNum =
+                (posSizeCount >= 2 && POS_SIZE_NAMES.has(name)) ||
+                (rgbaCount >= 3 && RGBA_NAMES.has(name)) ||
+                (dxDyCount >= 2 && DX_DY_NAMES.has(name))
+
+            if (assumeNum) {
+                info.parameterTypes[i] ??= new Set()
+                info.parameterTypes[i].add('number')
+                continue
+            }
+
+            // isX → boolean
+            const third = name.slice(2, 3)
+            if (name.startsWith('is') && third.toUpperCase() === third) {
+                info.parameterTypes[i] ??= new Set()
+                info.parameterTypes[i].add('boolean')
+                continue
+            }
+
+            // avoid heuristics for doTitle
+            const upper = name.toUpperCase()
+            if (upper.startsWith('DO')) {
+                continue
+            }
+
+            // starts or ends with num → assume number
+            if (upper.startsWith('NUM') || upper.endsWith('NUM')) {
+                info.parameterTypes[i] ??= new Set()
+                info.parameterTypes[i].add('number')
+                continue
+            }
+
+            // ends with name, title, or str → assume string
+            if (
+                upper.endsWith('STR') ||
+                upper.endsWith('NAME') ||
+                upper.endsWith('TITLE')
+            ) {
+                info.parameterTypes[i] ??= new Set()
+                info.parameterTypes[i].add('string')
+                continue
+            }
+
+            // target, paramN, argN → unknown
+            if (UNKNOWN_NAMES.test(name)) {
+                info.parameterTypes[i] ??= new Set()
+                info.parameterTypes[i].add('unknown')
+            }
+        }
+    }
+
+    /**
      * Checks whether the given expression has already been seen.
      * This will attempt to use known types, and will otherwise add `unknown`.
+     * @param info The expression to check.
+     * @param types The set of types to add to if a cycle is found.
+     * @param seen A map associating expression information objects to sets of types.
      */
     protected checkCycle(
         info: LuaExpressionInfo,
@@ -1281,8 +1042,9 @@ export class TypeResolver {
     }
 
     /**
-     * Gets the truthiness of a set of types.
-     * If the truth cannot be determined, returns `undefined`
+     * Determines the truthiness of a set of types.
+     * If the truthiness cannot be determined, returns `undefined`.
+     * @param types The set of types to check.
      */
     protected getTruthiness(types: Set<string>): boolean | undefined {
         let hasTruthy = false
@@ -1311,21 +1073,9 @@ export class TypeResolver {
     }
 
     /**
-     * Gets the types determined based on usage for an expression.
-     * Returns undefined if types couldn't be determined.
-     */
-    protected getUsageTypes(expr: LuaExpression): Set<string> | undefined {
-        const types = this.context.usageTypes.get(expr)
-        if (!types || types.size === 0 || types.size === 5) {
-            return
-        }
-
-        return types
-    }
-
-    /**
      * Checks whether an expression is a literal or an
      * operation containing only literals.
+     * @param expr The expression to check.
      */
     protected isLiteralOperation(expr: LuaExpression) {
         if (expr.type === 'literal') {
@@ -1352,6 +1102,9 @@ export class TypeResolver {
 
     /**
      * Narrows possible expression types based on usage.
+     * @param expr The expression to narrow types for.
+     * @param types The set of types to add results to.
+     * If narrowing succeeds, this will be cleared and replaced with narrowed types.
      */
     protected narrowTypes(expr: LuaExpression, types: Set<string>) {
         if (types.size <= 1) {
@@ -1359,8 +1112,8 @@ export class TypeResolver {
             return
         }
 
-        const usage = this.getUsageTypes(expr)
-        if (!usage) {
+        const usage = this.context.usageTypes.get(expr)
+        if (!usage || usage.size === 0 || usage.size === 5) {
             // no narrowing is possible
             return
         }
@@ -1385,6 +1138,10 @@ export class TypeResolver {
         narrowed.forEach((x) => types.add(x))
     }
 
+    /**
+     * Remaps `true` and `false` types to `boolean`.
+     * @param types The set of types to remap booleans within.
+     */
     protected remapBooleans(types: Set<string>) {
         const remapped = [...types].map((x) =>
             x === 'true' || x === 'false' ? 'boolean' : x,
@@ -1394,6 +1151,69 @@ export class TypeResolver {
         remapped.forEach((x) => types.add(x))
 
         return types
+    }
+
+    /**
+     * Resolves the return types of a function call operation.
+     * @param op The function call operation.
+     * @param seen Associates already encountered expressions to sets of types, to avoid cycles.
+     */
+    protected resolveCallReturnTypes(
+        op: LuaOperation,
+        seen?: Map<LuaExpressionInfo, Set<string>>,
+    ): Set<string>[] | undefined {
+        const func = op.arguments[0]
+        if (!func) {
+            return
+        }
+
+        const types: Set<string>[] = []
+        const knownTypes = new Set<string>()
+        if (this.addKnownReturns(func, knownTypes)) {
+            types.push(knownTypes)
+            return types
+        }
+
+        const resolvedFuncTypes = this.resolveExpression(func, seen)
+        if (!resolvedFuncTypes || resolvedFuncTypes.size !== 1) {
+            return
+        }
+
+        const resolvedFunc = [...resolvedFuncTypes][0]
+        if (!resolvedFunc.startsWith('@function')) {
+            return
+        }
+
+        // handle constructors
+        const funcInfo = this.context.getFunctionInfo(resolvedFunc)
+        if (funcInfo.isConstructor) {
+            types.push(new Set())
+            types[0].add('@instance') // mark as an instance to correctly attribute fields
+            funcInfo.returnTypes[0]?.forEach((x) => types[0].add(x))
+            return types
+        }
+
+        for (let i = 0; i < funcInfo.returnTypes.length; i++) {
+            types.push(new Set(funcInfo.returnTypes[i]))
+        }
+
+        return types
+    }
+
+    /**
+     * Resolves the potential types of an expression.
+     * Helper for resolution of an expression without field metadata.
+     *
+     * @param expr The expression to resolve.
+     * @param seen Associates already encountered expressions to sets of types, to avoid cycles.
+     * @param index The index of the expression in a call assignment.
+     */
+    protected resolveExpression(
+        expr: LuaExpression,
+        seen?: Map<LuaExpressionInfo, Set<string>>,
+        index?: number,
+    ): Set<string> {
+        return this.resolve({ expression: expr, index: index }, seen)
     }
 
     /**
@@ -1453,7 +1273,7 @@ export class TypeResolver {
 
         switch (op.operator) {
             case 'call':
-                const returnTypes = this.resolveReturnTypes(op, seen)
+                const returnTypes = this.resolveCallReturnTypes(op, seen)
                 if (returnTypes === undefined) {
                     break
                 }
@@ -1519,8 +1339,8 @@ export class TypeResolver {
                 lhs = op.arguments[0]
                 rhs = op.arguments[1]
 
-                lhsTypes = this.resolve({ expression: lhs }, seen)
-                rhsTypes = this.resolve({ expression: rhs }, seen)
+                lhsTypes = this.resolveExpression(lhs, seen)
+                rhsTypes = this.resolveExpression(rhs, seen)
 
                 // X and Y or Z → use Y & Z (ternary special case)
                 if (lhs.type === 'operation' && lhs.operator === 'and') {
@@ -1549,8 +1369,8 @@ export class TypeResolver {
                 lhs = op.arguments[0]
                 rhs = op.arguments[1]
 
-                lhsTypes = this.resolve({ expression: lhs }, seen)
-                rhsTypes = this.resolve({ expression: rhs }, seen)
+                lhsTypes = this.resolveExpression(lhs, seen)
+                rhsTypes = this.resolveExpression(rhs, seen)
 
                 lhsTruthy = this.isLiteralOperation(lhs)
                     ? this.getTruthiness(lhsTypes)
@@ -1572,5 +1392,269 @@ export class TypeResolver {
         }
 
         return types
+    }
+
+    /**
+     * Resolves return types for a scope or module.
+     * @param item The item to resolve return types for.
+     */
+    protected resolveReturns(item: ReturnsItem | ResolvedScopeItem) {
+        if (item.returns === undefined) {
+            return
+        }
+
+        const funcInfo = this.context.getFunctionInfo(item.id)
+
+        // don't add returns to a class constructor
+        if (funcInfo.isConstructor) {
+            funcInfo.minReturns = Math.min(
+                funcInfo.minReturns ?? Number.MAX_VALUE,
+                item.returns.length,
+            )
+
+            return
+        }
+
+        let fullReturnCount = item.returns.length
+        for (let i = 0; i < item.returns.length; i++) {
+            funcInfo.returnTypes[i] ??= new Set()
+            funcInfo.returnExpressions[i] ??= new Set()
+
+            if (item.type === 'resolved') {
+                item.returns[i].types.forEach((x) =>
+                    funcInfo.returnTypes[i].add(x),
+                )
+
+                continue
+            }
+
+            const ret = item.returns[i]
+            const isTailCall =
+                i === item.returns.length - 1 &&
+                ret.type === 'operation' &&
+                ret.operator === 'call'
+
+            if (isTailCall) {
+                const funcReturns = this.resolveCallReturnTypes(ret)
+                if (funcReturns) {
+                    fullReturnCount += funcReturns.length - 1
+                    funcInfo.returnExpressions[i].add(ret)
+
+                    for (let j = 0; j < funcReturns.length; j++) {
+                        funcInfo.returnTypes[i + j] ??= new Set()
+
+                        this.remapBooleans(funcReturns[j]).forEach((x) =>
+                            funcInfo.returnTypes[i + j].add(x),
+                        )
+                    }
+
+                    continue
+                }
+            }
+
+            funcInfo.returnExpressions[i].add(ret)
+            this.remapBooleans(this.resolveExpression(ret)).forEach((x) =>
+                funcInfo.returnTypes[i].add(x),
+            )
+        }
+
+        funcInfo.minReturns = Math.min(
+            funcInfo.minReturns ?? Number.MAX_VALUE,
+            fullReturnCount,
+        )
+
+        const min = funcInfo.minReturns
+        if (min === undefined) {
+            return
+        }
+
+        // mark returns exceeding the minimum as nullable
+        for (let i = min; i < funcInfo.returnTypes.length; i++) {
+            funcInfo.returnTypes[i].add('nil')
+        }
+    }
+
+    /**
+     * Resolves an expression into a basic literal, if it can be determined
+     * to be resolvable to one.
+     * @param expression The expression to resolve.
+     * @param seen Associates already encountered expressions to sets of types, to avoid cycles.
+     */
+    protected resolveToLiteral(
+        expression: LuaExpression,
+        seen?: Map<LuaExpressionInfo, Set<string>>,
+    ): LuaLiteral | undefined {
+        const stack: LuaExpressionInfo[] = []
+
+        stack.push({ expression })
+
+        while (stack.length > 0) {
+            const info = stack.pop()!
+            const expr = info.expression
+
+            let key: string
+            let tableInfo: TableInfo
+            let fieldDefs: LuaExpressionInfo[] | undefined
+            switch (expr.type) {
+                case 'literal':
+                    if (
+                        expr.luaType !== 'table' &&
+                        expr.luaType !== 'function'
+                    ) {
+                        return expr
+                    }
+
+                    return
+
+                case 'reference':
+                    fieldDefs = this.context.getDefinitions(expr.id)
+                    if (fieldDefs.length === 1) {
+                        stack.push(fieldDefs[0])
+                    }
+
+                    break
+
+                case 'member':
+                    const memberBase = [...this.resolveExpression(expr.base)]
+                    if (memberBase.length !== 1) {
+                        break
+                    }
+
+                    tableInfo = this.context.getTableInfo(memberBase[0])
+                    key = getLiteralKey(expr.member)
+                    fieldDefs = tableInfo.definitions.get(key) ?? []
+
+                    if (fieldDefs.length === 1) {
+                        stack.push(fieldDefs[0])
+                    }
+
+                    break
+
+                case 'index':
+                    const indexBase = [...this.resolveExpression(expr.base)]
+                    if (indexBase.length !== 1) {
+                        break
+                    }
+
+                    const index = this.resolveToLiteral(expr.index, seen)
+
+                    if (!index || !index.literal) {
+                        break
+                    }
+
+                    tableInfo = this.context.getTableInfo(indexBase[0])
+                    key = getLiteralKey(index.literal, index.luaType)
+
+                    fieldDefs = tableInfo.definitions.get(key) ?? []
+
+                    if (fieldDefs.length === 1) {
+                        stack.push(fieldDefs[0])
+                    }
+
+                    break
+
+                case 'operation':
+                    const types = [...this.resolveExpression(expr, seen)]
+                    if (types.length !== 1) {
+                        break
+                    }
+
+                    // only resolve known booleans
+                    if (types[0] === 'true' || types[0] === 'false') {
+                        return {
+                            type: 'literal',
+                            luaType: 'boolean',
+                            literal: types[0],
+                        }
+                    }
+
+                    break
+            }
+        }
+    }
+
+    /**
+     * Attempts to create a partial analysis item based on an assignment.
+     * @param scope The current scope.
+     * @param item The assignment item.
+     * @param lhs The left side of the assignment.
+     * @param rhs The right side of the assignment.
+     * @returns A table ID to use in place of the RHS expression.
+     */
+    protected tryAddPartialItem(
+        scope: LuaScope,
+        item: AssignmentItem | RequireAssignmentItem | FunctionDefinitionItem,
+        lhs: LuaReference,
+        rhs: LuaExpression,
+    ): string | undefined {
+        // edge case: closure-based classes
+        if (scope.type === 'function') {
+            if (scope.localIdToName(lhs.id) !== scope.classSelfName) {
+                return
+            }
+
+            // self = {} | Base.new() → use the generated table
+            return scope.classTableId
+        }
+
+        // check module and module-level blocks, excluding functions
+        if (!scope.id.startsWith('@module')) {
+            return
+        }
+
+        // include requires as module fields
+        if (item.type === 'requireAssignment') {
+            scope.items.push({
+                type: 'partial',
+                requireInfo: {
+                    name: lhs.id,
+                    module: item.rhs.module,
+                },
+            })
+
+            return
+        }
+
+        // global function definition
+        if (item.type === 'functionDefinition') {
+            // ignore local functions
+            if (item.isLocal) {
+                return
+            }
+
+            scope.items.push({
+                type: 'partial',
+                functionInfo: {
+                    name: lhs.id,
+                    functionId: item.id,
+                },
+            })
+
+            return
+        }
+
+        // class definition
+        const id = this.classResolver.tryAddPartial(scope, lhs, rhs)
+        if (id) {
+            return typeof id === 'string' ? id : undefined
+        }
+
+        // global function assignment
+        // (the above 'functionDefinition' item does not cover assignment to a function)
+        const rhsTypes = [...this.resolveExpression(item.rhs)]
+        if (rhsTypes.length !== 1) {
+            return
+        }
+
+        const rhsType = rhsTypes[0]
+        if (rhsType.startsWith('@function')) {
+            scope.items.push({
+                type: 'partial',
+                functionInfo: {
+                    name: lhs.id,
+                    functionId: rhsType,
+                },
+            })
+        }
     }
 }
