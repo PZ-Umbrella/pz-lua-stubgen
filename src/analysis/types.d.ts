@@ -301,7 +301,18 @@ export interface LiteralTableField {
     types?: Set<string>
 }
 
+/**
+ * A table literal which has a table identifier.
+ */
 export type LuaTableLiteral = LuaLiteral & { tableId: string }
+
+/**
+ * An operation of the form `X or {}`.
+ */
+export type LuaTableCoalesceOperation = LuaOperation & {
+    operator: 'or'
+    arguments: [LuaExpression, LuaTableLiteral]
+}
 
 //#endregion
 
