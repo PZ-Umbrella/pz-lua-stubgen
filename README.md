@@ -18,7 +18,7 @@ npm run build
 The primary command of the tool generates typestubs given a Lua source directory.
 From the top-level directory, use:
 ```
-pz-lua-stubgen -i <input-directory> -o <output-directory>`
+pz-lua-stubgen -i <input-directory> -o <output-directory>
 ```
 
 On Linux, use `./pz-lua-stubgen` instead.
