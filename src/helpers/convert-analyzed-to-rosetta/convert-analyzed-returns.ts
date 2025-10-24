@@ -20,9 +20,11 @@ export const convertAnalyzedReturns = (
 
         if (mergeRet && keepTypes) {
             ret.type = mergeRet.type ?? type ?? 'unknown'
+            ret.name = mergeRet.name
             ret.nullable = mergeRet.nullable
         } else {
             ret.type = type ?? 'unknown'
+            ret.name = mergeRet?.name
             ret.nullable = nullable ? true : undefined
         }
 
