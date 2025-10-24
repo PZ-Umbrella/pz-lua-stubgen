@@ -1,5 +1,5 @@
 import type ast from 'luaparse'
-import { getLiteralKey } from '../helpers'
+import { getLiteralKey, isEmptyTableLiteral, isTableCoalesce } from '../helpers'
 import type { LuaScope } from '../common'
 import type { AnalysisContext } from './AnalysisContext'
 import type {
@@ -249,8 +249,28 @@ export class TypeResolver {
             case 'index':
                 const indexBase = [...this.resolveExpression(lhs.base)]
 
+                // definition on unknown global → unknown class for base
+                if (indexBase.length === 0) {
+                    const id = this.classResolver.tryAddUnknownClass(
+                        scope,
+                        lhs,
+                        item,
+                    )
+
+                    if (id) {
+                        indexBase.push(id)
+                    }
+                }
+
                 if (indexBase.length !== 1) {
-                    break
+                    const match = this.getTableDeclaredInCurrent(indexBase)
+
+                    if (!match) {
+                        break
+                    }
+
+                    indexBase.splice(0, indexBase.length)
+                    indexBase.push(match)
                 }
 
                 const resolved = this.resolveToLiteral(lhs.index)
@@ -279,7 +299,7 @@ export class TypeResolver {
                     },
                 )
 
-                // method definition on unknown global → unknown class for base
+                // definition on unknown global → unknown class for base
                 if (memberBase.length === 0) {
                     const id = this.classResolver.tryAddUnknownClass(
                         scope,
@@ -294,7 +314,14 @@ export class TypeResolver {
 
                 // no types or ambiguous type
                 if (memberBase.length !== 1) {
-                    break
+                    const match = this.getTableDeclaredInCurrent(memberBase)
+
+                    if (!match) {
+                        break
+                    }
+
+                    memberBase.splice(0, memberBase.length)
+                    memberBase.push(match)
                 }
 
                 // ignore __index in instances
@@ -665,7 +692,7 @@ export class TypeResolver {
     /**
      * Adds an expression to the list of definitions for a table field.
      * @param scope The current scope.
-     * @param id The identifier or internal `@`-prefixed ID.
+     * @param id The internal `@`-prefixed ID.
      * @param field The name of the field.
      * @param rhs The expression being assigned to the field.
      * @param lhs The original left side expression for the assignment, if available.
@@ -701,6 +728,10 @@ export class TypeResolver {
                 lhs,
                 rhs,
             )
+        }
+
+        if (lhs && isTableCoalesce(lhs, rhs)) {
+            rhs = rhs.arguments[1]
         }
 
         const types = this.resolveExpression(rhs)
@@ -1039,6 +1070,32 @@ export class TypeResolver {
 
         existing.forEach((x) => types.add(x))
         return true
+    }
+
+    /**
+     * Gets the table declared in the current module, if all of the provided types are tables
+     * and only one was declared in the current module.
+     * @param types The list of types.
+     */
+    protected getTableDeclaredInCurrent(types: string[]): string | undefined {
+        const hasNonTable = types.find((x) => !x.startsWith('@table'))
+        if (hasNonTable) {
+            return
+        }
+
+        let definedInModule: string | undefined
+        for (const tableId of types) {
+            const info = this.context.getTableInfo(tableId)
+            if (info.definingModule === this.context.currentModule) {
+                if (definedInModule) {
+                    return
+                }
+
+                definedInModule = tableId
+            }
+        }
+
+        return definedInModule
     }
 
     /**
@@ -1631,6 +1688,22 @@ export class TypeResolver {
             })
 
             return
+        }
+
+        // check for existing class when rhs is an empty literal
+        // handles debugScenarios case
+        const defs = this.context.definitions.get(lhs.id) ?? []
+        if (isEmptyTableLiteral(rhs) && defs.length > 0) {
+            const firstDef = defs[0]
+            const firstExpr = firstDef.expression
+            const existingTableId =
+                !firstDef.functionLevel &&
+                firstExpr.type === 'literal' &&
+                firstExpr.tableId
+
+            if (existingTableId) {
+                return existingTableId
+            }
         }
 
         // class definition

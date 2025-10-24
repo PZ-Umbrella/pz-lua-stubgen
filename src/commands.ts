@@ -132,8 +132,13 @@ export const updateRosettaCommand = (yargs: Argv) => {
         })
         .option('keep-types', {
             type: 'boolean',
-            default: 'false',
-            desc: 'If given, currently documented Rosetta types will not be updated',
+            default: true,
+            hidden: true,
+        })
+        .option('no-keep-types', {
+            type: 'boolean',
+            defaultDescription: 'false',
+            desc: 'Flag to disregard currently documented Rosetta types',
         })
         .option('extra-files', {
             type: 'array',
@@ -179,7 +184,6 @@ const addExcludeOptions = (yargs: Argv) => {
         .option('include-large-defs', {
             type: 'boolean',
             default: false,
-            defaultDescription: 'true',
             desc: 'Include fields for known large definition classes',
         })
 }

@@ -79,6 +79,12 @@ export class AnalysisContext {
     unknownClasses: Map<string, string>
 
     /**
+     * Associates global names to sets of table IDs used for partial class definitions.
+     * This is used to merge unknown classes into class definitions when they're found.
+     */
+    globalDefsToMerge: Map<string, Set<string>>
+
+    /**
      * Associates function declarations to function IDs.
      */
     protected functionToId: Map<ast.FunctionDeclaration, string>
@@ -128,6 +134,7 @@ export class AnalysisContext {
         this.definitions = new Map()
         this.usageTypes = new Map()
         this.unknownClasses = new Map()
+        this.globalDefsToMerge = new Map()
         this.modules = new Map()
 
         this.classResolver = new ClassResolver(this)

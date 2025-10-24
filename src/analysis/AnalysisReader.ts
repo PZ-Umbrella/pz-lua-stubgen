@@ -1,6 +1,11 @@
 import type ast from 'luaparse'
 import type { AnalysisContext } from './AnalysisContext'
-import type { ExpressionOrHasBody, LuaModuleScope, LuaScope } from '../common'
+import type {
+    ExpressionOrHasBody,
+    LuaModuleScope,
+    LuaScope,
+    NodeWithBody,
+} from '../common'
 import { readLuaStringLiteral } from '../helpers'
 
 import type {
@@ -787,8 +792,8 @@ export class AnalysisReader extends BaseReader {
             parent.addLocalFunction(name, id)
         }
 
-        // if no return statement is found as a direct child, add an empty return
-        if (!node.body.find((x) => x.type === 'ReturnStatement')) {
+        // if no return statement is found, add an empty return
+        if (!this.hasGuaranteedReturn(node)) {
             scope.addItem({
                 type: 'returns',
                 id,
@@ -869,5 +874,53 @@ export class AnalysisReader extends BaseReader {
         for (const childScope of this.getScopedBlocks(expressions, scope)) {
             this.readScope(childScope)
         }
+    }
+
+    /**
+     * Checks whether a function is guaranteed to hit a return statement.
+     * @param node The function node to check.
+     */
+    protected hasGuaranteedReturn(node: NodeWithBody): boolean {
+        const toCheck: NodeWithBody[] = []
+        for (let i = 0; i < node.body.length; i++) {
+            const isLast = i === node.body.length - 1
+
+            const child = node.body[i]
+            switch (child.type) {
+                case 'ReturnStatement':
+                    return true
+
+                case 'IfStatement':
+                    if (!isLast) {
+                        break
+                    }
+
+                    const elseClause = child.clauses.find(
+                        (x) => x.type === 'ElseClause',
+                    )
+
+                    // only guaranteed if the statement has an else branch
+                    if (elseClause) {
+                        toCheck.push(...child.clauses)
+                    }
+
+                    break
+
+                case 'WhileStatement':
+                case 'RepeatStatement':
+                case 'DoStatement':
+                case 'ForGenericStatement':
+                case 'ForNumericStatement':
+                    if (isLast) {
+                        toCheck.push(child)
+                    }
+            }
+        }
+
+        if (toCheck.length > 0) {
+            return toCheck.every((x) => this.hasGuaranteedReturn(x))
+        }
+
+        return false
     }
 }
