@@ -1,5 +1,5 @@
 import type ast from 'luaparse'
-import { getLiteralKey } from '../helpers'
+import { getLiteralKey, isEmptyTableLiteral } from '../helpers'
 import type { LuaScope } from '../common'
 import type { AnalysisContext } from './AnalysisContext'
 import type {
@@ -1644,6 +1644,22 @@ export class TypeResolver {
             })
 
             return
+        }
+
+        // check for existing class when rhs is an empty literal
+        // handles debugScenarios case
+        const defs = this.context.definitions.get(lhs.id) ?? []
+        if (isEmptyTableLiteral(rhs) && defs.length > 0) {
+            const firstDef = defs[0]
+            const firstExpr = firstDef.expression
+            const existingTableId =
+                !firstDef.functionLevel &&
+                firstExpr.type === 'literal' &&
+                firstExpr.tableId
+
+            if (existingTableId) {
+                return existingTableId
+            }
         }
 
         // class definition

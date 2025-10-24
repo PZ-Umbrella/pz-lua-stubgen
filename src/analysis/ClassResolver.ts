@@ -1,5 +1,10 @@
 import type ast from 'luaparse'
-import { getLuaFieldKey, readLuaStringLiteral } from '../helpers'
+import {
+    getLuaFieldKey,
+    isEmptyTableLiteral,
+    readLuaStringLiteral,
+} from '../helpers'
+
 import type { LuaScope } from '../common'
 import type { AnalysisContext } from './AnalysisContext'
 import type {
@@ -680,16 +685,10 @@ export class ClassResolver {
                     continue
                 }
 
-                if (defExpr.type !== 'literal' || !defExpr.tableId) {
-                    continue
+                if (isEmptyTableLiteral(defExpr)) {
+                    defs.shift()
+                    defs.push(...unknownDefs)
                 }
-
-                if (defExpr.fields && defExpr.fields.length > 0) {
-                    continue
-                }
-
-                defs.shift()
-                defs.push(...unknownDefs)
             }
         }
     }
@@ -1075,18 +1074,9 @@ export class ClassResolver {
             return
         }
 
-        // table?
+        // empty table?
         const expr = def.expression
-        if (expr.type !== 'literal' || expr.luaType !== 'table') {
-            return
-        }
-
-        if (!expr.tableId) {
-            return
-        }
-
-        // empty?
-        if (expr.fields && expr.fields.length > 0) {
+        if (!isEmptyTableLiteral(expr)) {
             return
         }
 

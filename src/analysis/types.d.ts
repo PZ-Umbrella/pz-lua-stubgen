@@ -301,6 +301,8 @@ export interface LiteralTableField {
     types?: Set<string>
 }
 
+export type LuaTableLiteral = LuaLiteral & { tableId: string }
+
 //#endregion
 
 //#region Analysis Items
