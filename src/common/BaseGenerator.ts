@@ -279,6 +279,9 @@ export abstract class BaseGenerator extends BaseCommandHandler {
     protected createModule(file: RosettaFile): AnalyzedModule {
         const mod: AnalyzedModule = {
             id: file.id,
+            prefix: file.tags.has('StubGen_Definitions')
+                ? '---@meta _'
+                : undefined,
             classes: [],
             functions: [],
             tables: [],
@@ -338,10 +341,6 @@ export abstract class BaseGenerator extends BaseCommandHandler {
 
         const idSet = new Set<string>(modules.map((x) => x.id))
         for (const [id, file] of Object.entries(this.rosetta.files)) {
-            if (file.tags.has('StubGen_Definitions')) {
-                continue
-            }
-
             if (!idSet.has(id)) {
                 modules.push(this.createModule(file))
             }
