@@ -844,14 +844,37 @@ export class TypeResolver {
      * TODO: This should be replaced with using Rosetta files (java + kahlua stub) to populate
      * default types for the environment, alongside definitions for the basic Lua environment.
      *
-     * @param expr The expression to check. If it's not a reference, this is ignored.
+     * @param op The operation expression to check.
      * @param types Set of types to add potential types to.
-     * @returns Flag representing whether the function was known.
+     * @returns Flag representing whether known types were added to the set.
      */
-    protected addKnownReturns(
-        expr: LuaExpression,
-        types: Set<string>,
-    ): boolean {
+    protected addKnownReturns(op: LuaOperation, types: Set<string>): boolean {
+        const expr = op.arguments[0]
+        if (!expr || op.operator !== 'call') {
+            return false
+        }
+
+        // check for ISXuiSkin.build
+        if (expr.type === 'member' && expr.base.type === 'reference') {
+            if (expr.base.id !== 'ISXuiSkin' || expr.member !== 'build') {
+                return false
+            }
+
+            const clsArg = op.arguments[3]
+            if (!clsArg) {
+                return false
+            }
+
+            const clsType = this.resolveExpression(clsArg)
+            if (clsType.size !== 1) {
+                return false
+            }
+
+            types.add([...clsType][0])
+            types.add('@instance')
+            return true
+        }
+
         if (expr.type !== 'reference') {
             return false
         }
@@ -1219,16 +1242,16 @@ export class TypeResolver {
         op: LuaOperation,
         seen?: Map<LuaExpressionInfo, Set<string>>,
     ): Set<string>[] | undefined {
+        const types: Set<string>[] = []
+        const knownTypes = new Set<string>()
+        if (this.addKnownReturns(op, knownTypes)) {
+            types.push(knownTypes)
+            return types
+        }
+
         const func = op.arguments[0]
         if (!func) {
             return
-        }
-
-        const types: Set<string>[] = []
-        const knownTypes = new Set<string>()
-        if (this.addKnownReturns(func, knownTypes)) {
-            types.push(knownTypes)
-            return types
         }
 
         const resolvedFuncTypes = this.resolveExpression(func, seen)
