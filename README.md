@@ -24,7 +24,7 @@ pz-lua-stubgen -i <input-directory> -o <output-directory>
 On Linux, use `./pz-lua-stubgen` instead.
 
 When building stubs for Umbrella, some additional flags that should probably be included:
-- `-k`, to include a stub for Kahlua functions.
+- `-k`, to include a stub for Kahlua. Note that some classes used in this stub are assumed to be defined elsewhere (for Umbrella, they're defined in the Java stubs).
 - `-r <stub-data-directory>`, to include [Rosetta](https://github.com/asledgehammer/PZ-Rosetta-Schema) stub data.
 - `--helper-pattern ^umbrella\.`, to avoid emitting globals for umbrella helper classes.
 - `--no-ambiguity`, to avoid emitting analyzed union types.

@@ -3,7 +3,6 @@ languages:
   lua:
     tags: [StubGen_Definitions]
     tables:
-      __classmetatables: {}
       string:
         tags: [StubGen_NoInitializer]
         staticMethods:
@@ -63,10 +62,6 @@ languages:
                 return:
                   - type: table
     classes:
-      Reader:
-        mutable: false
-      InputStream:
-        mutable: false
       Random:
         local: true
         mutable: false
