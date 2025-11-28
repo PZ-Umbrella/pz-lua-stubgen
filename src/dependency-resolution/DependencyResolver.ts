@@ -131,8 +131,8 @@ export class DependencyResolver extends BaseCommandHandler {
 
             const subdir = this.subdirectories[i] ?? ''
             const deque = new Deque<string>([files.pop()!])
-            while (deque.size() > 0) {
-                const file = deque.popFront()
+            while (!deque.isEmpty()) {
+                const file = deque.popFront()!
                 seen.add(file)
 
                 if (order.has(file)) {
