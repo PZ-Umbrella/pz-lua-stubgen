@@ -67,15 +67,21 @@ languages:
         mutable: false
         methods:
           - name: random
-            parameters:
-              - name: m
-                type: integer
-                nullable: true
-              - name: n
-                type: integer
-                nullable: true
             return:
               - type: number
+            overloads:
+              - parameters:
+                - name: m
+                  type: integer
+                return:
+                  - type: integer
+              - parameters:
+                - name: m
+                  type: integer
+                - name: n
+                  type: integer
+                return:
+                  - type: integer
           - name: seed
             parameters:
               - name: value
