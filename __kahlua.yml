@@ -52,7 +52,7 @@ languages:
           - name: newarray
             parameters:
               - name: "..."
-                type: unknown
+                type: any
             return:
               - type: table
             overloads:
