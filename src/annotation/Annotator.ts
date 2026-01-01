@@ -1033,7 +1033,7 @@ export class Annotator extends BaseGenerator {
             const returns: string[] = []
             for (const ret of overload.return ?? []) {
                 if (ret.type) {
-                    returns.push(ret.type)
+                    returns.push(getRosettaTypeString(ret.type, ret.nullable))
                 }
             }
 
