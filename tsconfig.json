@@ -5,6 +5,7 @@
     "target": "es2021",
     "module": "CommonJS",
     "outDir": "./build",
+    "rootDir": "./src",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
