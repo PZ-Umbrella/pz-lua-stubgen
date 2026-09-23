@@ -95,30 +95,6 @@ languages:
                 type: unknown
                 nullable: true
     functions:
-      - name: serialize
-        parameters:
-          - name: value
-            type: unknown
-          - name: multiline
-            type: string
-            nullable: true
-          - name: indent
-            type: string
-            nullable: true
-        return:
-          - type: string
-      - name: deserialize
-        parameters:
-          - name: s
-            type: string
-        return:
-          - type: unknown
-      - name: pp
-        parameters:
-          - name: value
-            type: unknown
-        return:
-          - type: string
       - name: debugstacktrace
         parameters:
           - name: thread
@@ -135,17 +111,6 @@ languages:
             nullable: true
         return:
           - type: string
-      - name: loadstream
-        parameters:
-          - name: stream
-            type: Reader | InputStream
-          - name: chunkname
-            type: string
-        return:
-          - type: function
-            nullable: true
-          - type: string
-            nullable: true
       - name: bytecodeloader
         parameters:
           - name: loader
